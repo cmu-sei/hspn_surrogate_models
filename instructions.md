@@ -5,23 +5,32 @@
 ### Commands
 - submitting a job: 
     ```
-    sbatch <your_batch_scipt>
+    sbatch <your_batch_script>
     ```
 
 - checking the queue for your jobs: 
     ```
     squeue -u <your user ID>
     ``` 
+- you can get an interactive node like this:
+    ```
+    srun --pty  -A <your account> -q <your qos>  --x11 /bin/bash -i
+    ```
+     - for the ARL project that looks like this:
+        ```
+        srun --pty  -A ARLAP44862YFR -q frontier  --x11 /bin/bash -i
+        ```
+     - then, ssh into the waiting node:
 
 ### Notes
-Insert notes here
+- note that the interactive node will not work if you try to get a GPU (it will either throw an error or hang, depending on the method used).
 
 ## singularity
 
 ### Commands
 - singularity shell: 
     ```
-    singularity shell -B <directories>,<to>,<mount> --nv </p/your.container/location.sif>
+    singularity shell -B <directories>,<to>,<mount> --nv </p/your/container/location.sif>
     ```
 ### Notes
 - the `--nv` flag is for nvidia and will throw a warning if the machine you're on doesn't support nvidia.
@@ -39,3 +48,8 @@ Insert notes here
     ```
     Singularity> python -c "import numpy as np; print(f'random number: {np.random.randint(100)}');"
     ```
+- If you have a local package you can install it (but there's no way to reach back to pypi):
+    ```
+    pip install -e .
+    ```
+    
