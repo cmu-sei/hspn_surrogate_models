@@ -1,0 +1,27 @@
+#
+# values taken from deeponet volume training script, train_don.py
+#
+    
+locations:    
+ - input_dir: "/p/work1/projects/FrontierX/don_volume_data" 
+ - output_dir: "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
+ - model_dir:  "/p/work1/projects/FrontierX/hspn/models/don_volume_model"
+
+hyper_parameters:
+- latent_dim: 25
+- n_epochs: 50001
+- batch_size: 12690717
+- learning_rate: 0.0005
+- optimizer: "adam"
+
+branch_net:
+- structure_file: ""
+- width: 4
+- depth: 100
+- activation: "elu"
+
+trunk_net:
+- structure_file: ""
+- width: 5 
+- depth: 100
+- activation: "relu"
