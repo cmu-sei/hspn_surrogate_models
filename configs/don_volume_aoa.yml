@@ -2,26 +2,53 @@
 # values taken from deeponet volume training script, train_don.py
 #
     
-locations:    
- - input_dir: "/p/work1/projects/FrontierX/don_volume_data" 
- - output_dir: "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
- - model_dir:  "/p/work1/projects/FrontierX/hspn/models/don_volume_model"
+document_type: "run_config"
+name: "run_parameters"
+model_dir:  "/p/work1/projects/FrontierX/hspn/models/don_volume_model"
+create_figures: true
+save_loss: true
+save_logs: true
+prepend: 'test_'
 
-hyper_parameters:
-- latent_dim: 25
-- n_epochs: 50001
-- batch_size: 12690717
-- learning_rate: 0.0005
-- optimizer: "adam"
+---
+document_type: 'data_config'
+name: 'data'
+duplicate: True
+branch_valid_idx_0: 18
+trunk_valid_idx_0: 
+data_dir: "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
+branch_input_files: ['aoa_total.npy']
+trunk_input_files: ['trunk_in_0.npy','trunk_in_1.npy']
+don_output_files: ['y_out_0.npy','y_out_1.npy']
+# to be implemented!
+#branch_input_file_hashes:
+#trunk_input_file_hashes:
+#don_output_file_hashes:
+...
 
-branch_net:
-- structure_file: ""
-- width: 4
-- depth: 100
-- activation: "elu"
-
-trunk_net:
-- structure_file: ""
-- width: 5 
-- depth: 100
-- activation: "relu"
+---
+document_type: 'train_config'
+name: "hyperparameters"
+n_epochs: 50001
+batch_size: 12690717
+learning_rate: 0.0005
+optimizer: "adam"
+...
+---
+#Deep O Net definition
+document_type: "don_config"
+name: "model"
+random_seed: 1234
+einsum: "ij, kj-> ik"
+latent_dim: 25
+branch: 
+  #structure_file: ""
+  width: 100
+  depth: 4
+  activation: "elu"
+trunk:
+  #structure_file: ""
+  width: 100 
+  depth: 5
+  activation: "relu"
+...
