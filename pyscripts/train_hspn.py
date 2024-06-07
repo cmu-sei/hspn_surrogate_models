@@ -16,6 +16,8 @@ import tensorflow as tf
 from tensorflow.keras import Sequential, Model, Input
 from tensorflow.keras.layers import Dropout, Reshape, Conv2D, PReLU, Flatten, Dense, Activation, MaxPooling2D, BatchNormalization
 from tensorflow.keras.losses import MeanSquaredError
+from tensorflow.keras.mixed_precision import experimental as mixed_precision, LossScaleOptimizer
+
 import horovod.tensorflow as hvd
 
 from hspn import utils as utils
@@ -36,6 +38,7 @@ logger.setLevel(logging.DEBUG)
 
 
 def setup_gpus():
+    hvd.init()    
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         try:
@@ -45,17 +48,31 @@ def setup_gpus():
             logger.debug(f"GPUs setup: {gpus}")
         except RuntimeError as e:
             logger.error(f"Error setting up GPUs: {e}")
+        except IndexError as e:
+            logger.error(f"Error: {e}")
+            logger.error(f"hvd.local_rank() = {hvd.local_rank()}, but gpus list has only {len(gpus)} elements.")
+
     else:
         logger.warning("No GPUs found.")
 
-
+def setup_mixed_precision(hp):
+    
+    base_optimizer = tf.keras.optimizers.Adam(learning_rate=hp.learning_rate)
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_policy(policy)
+    optimizer = LossScaleOptimizer(base_optimizer)
+    optimizer = hvd.DistributedOptimizer(optimizer)
+    return optimizer
 
 @tf.function()
 def train(model, batcher, first_batch):
-    x_branch, x_trunk, y_out = next(batcher)
+    x_branch, x_trunk, y_true = next(batcher)
     with tf.GradientTape() as tape:
-        y_hat  = model(x_branch, x_trunk)
-        loss   = model.loss(y_hat, y_out)[0]
+        
+        y_pred = model(x_branch, x_trunk)
+        y_true = tf.cast(y_true, dtype=tf.float32)
+        y_pred = tf.cast(y_pred, dtype=tf.float32)  
+        loss = model.loss(y_pred, y_true)[0]
 
     tape = hvd.DistributedGradientTape(tape)    
     gradients = tape.gradient(loss, model.trainable_variables)
@@ -70,29 +87,28 @@ def train(model, batcher, first_batch):
 @tf.function()
 def get_loss(model, x_branch, x_trunk, y_true):
     y_pred = model(x_branch, x_trunk)
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)  
     local_loss = model.loss(y_pred, y_true)[0]
     avg_loss = hvd.allreduce(local_loss, average=True)
     return avg_loss
-
-
+    
 
 def main(rp, hp, md, dt):
-    hvd.init()
-    rank = hvd.rank()
-    size = hvd.size()    
     setup_gpus()
     
+    ### Distributed optimizer
+    opt = setup_mixed_precision(hp)
+    
     ### Data loading
-    train_bin, train_tin, train_y_val = utils.get_data(dt, 'train', rank)
-    valid_bin, valid_tin, valid_y_val = utils.get_data(dt, 'valid', rank)
+    train_bin, train_tin, train_y_val = utils.get_data(dt, 'train', hvd.rank())
+    valid_bin, valid_tin, valid_y_val = utils.get_data(dt, 'valid', hvd.rank())
 
 
     ### Data batching
     train_batcher = utils.batcher(train_bin, train_tin, train_y_val, hp.batch_size, hp.batch_size)
     
-    ### Distributed optimizer
-    opt = tf.keras.optimizers.Adam(learning_rate=hp.learning_rate)
-    opt = hvd.DistributedOptimizer(opt)
+
 
     ### Model creation
     don_model = DeepONet_Model(md, opt, train_bin.shape[1], train_tin.shape[1])
@@ -101,30 +117,35 @@ def main(rp, hp, md, dt):
 
     early_stopping = utils.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
     begin_time = time.time()
+    stop_training = False
     for i in range(hp.n_epochs+1):
-
         #train model on next batch
-        loss = train(don_model, train_batcher, i==0)
-        avg_loss = hvd.allreduce(loss, average=True)
+        loss = train(don_model, train_batcher, i == 0)
+        #avg_loss = hvd.allreduce(loss, average=True)
     
-        if (i%hp.interval == 0):
-
+        if i%hp.interval == 0:
             train_loss = get_loss(don_model, train_bin, train_tin, train_y_val).numpy()
             valid_loss = get_loss(don_model, valid_bin, valid_tin, valid_y_val).numpy()
             
-            don_model.index_list.append(i)
-            don_model.train_loss_list.append(train_loss)
-            don_model.val_loss_list.append(valid_loss)
-                        
-            if rank==0:
+            if hvd.rank() == 0:
+                don_model.index_list.append(i)
+                don_model.train_loss_list.append(train_loss)
+                don_model.val_loss_list.append(valid_loss)
+                            
                 name = f"{rp.model_dir}/{rp.prepend}_model_{i:06}_vloss-{valid_loss:0.3f}"
                 logging.info("saving model")       
                 don_model.save_weights(name)
-                logger.info(f"Rank:{rank} epoch:{i}  Train Loss:{train_loss:.3e}, Val Loss:{valid_loss:.3e}, elapsed time:{int(time.time()-begin_time)} s" )
+                logger.info(f"Rank:{hvd.rank()} epoch:{i}  Train Loss:{train_loss:.3e}, Val Loss:{valid_loss:.3e}, elapsed time:{int(time.time()-begin_time)} s" )
 
                 if early_stopping(valid_loss):
                     logger.info(f"Early stopping at epoch {i}")
-                    break
+                    stop_training = True
+
+            # Broadcast the early stopping signal to all ranks
+            stop_training = hvd.broadcast(stop_training, root_rank=0)
+
+        if stop_training:
+            break
 
 
 def args_to_configs(args):

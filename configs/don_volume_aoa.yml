@@ -18,8 +18,8 @@ branch_valid_idx_0: 18
 trunk_valid_idx_0: 
 data_dir: "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
 branch_input_files: ['aoa_total.npy']
-trunk_input_files: ['trunk_in_0.npy','trunk_in_1.npy']
-don_output_files: ['y_out_0.npy','y_out_1.npy']
+trunk_input_files: ['trunk_in_0.npy','trunk_in_1.npy','trunk_in_2.npy','trunk_in_3.npy']
+don_output_files: ['y_out_0.npy','y_out_1.npy', 'y_out_2.npy','y_out_3.npy']
 # to be implemented! - check the file hash against what you expect - in case files changed.
 #branch_input_file_hashes:
 #trunk_input_file_hashes:
@@ -30,11 +30,11 @@ don_output_files: ['y_out_0.npy','y_out_1.npy']
 document_type: 'train_config'
 name: "hyperparameters"
 n_epochs: 50001
-batch_size: 12690717
+batch_size: 12690717 ##12690717
 learning_rate: 0.0005
 interval: 500
-patience: 20
-min_delta: 0
+patience: 100
+min_delta: 0.0
 optimizer: "adam"
 two_step: False ## to be implemented - two step training method.
 ...
