@@ -1,14 +1,12 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import time
-#from sklearn.preprocessing import StandardScaler
-import pickle
-#import matplotlib
-#matplotlib.rc('xtick', labelsize=16)
-#matplotlib.rc('ytick', labelsize=16)
+import argparse
+import logging
+import os
 import sys
 import time
-import os
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle
 
 # os.environ["CUDA_VISIBLE_DEVICES"] ="2"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
@@ -20,144 +18,156 @@ from tensorflow.keras.layers import Dropout, Reshape, Conv2D, PReLU, Flatten, De
 from tensorflow.keras.losses import MeanSquaredError
 import horovod.tensorflow as hvd
 
+from hspn import utils as utils
+from hspn.don import DeepONet_Model
+logging.basicConfig()
+logger = logging.getLogger("training script")
+formatter = logging.Formatter('%(name)s: %(asctime)s: %(levelname)s: %(message)s')
+shandler = logging.StreamHandler()
+shandler.setFormatter(formatter)
+t = time.gmtime()
+datetime = f'{t.tm_year}-{t.tm_yday}-{t.tm_hour}-{t.tm_min}-{t.tm_sec}'
+fhandler = logging.FileHandler(f"logfiles/train_hspn-{datetime}.log")
+fhandler.setFormatter(formatter)
+
+logger.addHandler(shandler)
+logger.addHandler(fhandler)
+logger.setLevel(logging.DEBUG) 
+
+
+def setup_gpus():
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logger.debug(f"GPUs setup: {gpus}")
+        except RuntimeError as e:
+            logger.error(f"Error setting up GPUs: {e}")
+    else:
+        logger.warning("No GPUs found.")
+
+
 
 @tf.function()
-def train(don_model, X_func, X_loc, y, first_batch):
+def train(model, batcher, first_batch):
+    x_branch, x_trunk, y_out = next(batcher)
     with tf.GradientTape() as tape:
-        y_hat  = don_model(X_func, X_loc)
-        loss   = don_model.loss(y_hat, y)[0]
+        y_hat  = model(x_branch, x_trunk)
+        loss   = model.loss(y_hat, y_out)[0]
 
     tape = hvd.DistributedGradientTape(tape)    
-    gradients = tape.gradient(loss, don_model.trainable_variables)
-    don_model.optimizer.apply_gradients(zip(gradients, don_model.trainable_variables))
+    gradients = tape.gradient(loss, model.trainable_variables)
+    model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
     if first_batch:
-        hvd.broadcast_variables(don_model.variables, root_rank=0)
-        hvd.broadcast_variables(don_model.optimizer.variables(), root_rank=0)
+        hvd.broadcast_variables(model.variables, root_rank=0)
+        hvd.broadcast_variables(model.optimizer.variables(), root_rank=0)
     return(loss)
 
-def main(config_file):
-    
-    # get configuration
-    config = utils.read_yaml(config_file)
-    rp = config.get('run_parameters')
-    hp = config.get('hyperparameters')
-    md = config.get('model')
-    dt = config.get('data')
-    
-    
-    #init horovod
+
+
+@tf.function()
+def get_loss(model, x_branch, x_trunk, y_true):
+    y_pred = model(x_branch, x_trunk)
+    local_loss = model.loss(y_pred, y_true)[0]
+    avg_loss = hvd.allreduce(local_loss, average=True)
+    return avg_loss
+
+
+
+def main(rp, hp, md, dt):
     hvd.init()
     rank = hvd.rank()
-    size = hvd.size()
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    print(f"gpus: {gpus}")
-
-    tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
-
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
- 
-    #get data
-    train_branch_input, train_trunk_input, train_exp_output = utils.get_data(dt,'train', rank)
-    valid_branch_input, valid_trunk_input, valid_exp_output = utils.get_data(dt,'valid', rank)
-
-    #    X_func_ls = aoa ---> train_branch_input
-    #    X_loc_ls = xyz  ---> train_trunk_input
-    #    y_ls = rho      ---> train_don_output # [13,50M, 1]
+    size = hvd.size()    
+    setup_gpus()
     
-    # Horovod distributed optimizer
-    # synchronizes gradient of the loss function
+    ### Data loading
+    train_bin, train_tin, train_y_val = utils.get_data(dt, 'train', rank)
+    valid_bin, valid_tin, valid_y_val = utils.get_data(dt, 'valid', rank)
+
+
+    ### Data batching
+    train_batcher = utils.batcher(train_bin, train_tin, train_y_val, hp.batch_size, hp.batch_size)
+    
+    ### Distributed optimizer
     opt = tf.keras.optimizers.Adam(learning_rate=hp.learning_rate)
     opt = hvd.DistributedOptimizer(opt)
-    
-    don_model = DeepONet_Model(md, 
-                               opt, 
-                               train_branch_input.shape[1], 
-                               train_trunk_input.shape[1])
-    
-       
-    print("DeepONet Training Begins")
-    X_func_train, X_loc_train, y_train = utils.batch(train_branch_input,
-                                                      train_trunk_input, 
-                                                      train_exp_output, 
-                                                      hp.batch_size)
-    #if rank==0:
-    #    print(f"Shape_0: {tf.shape(X_func_train)} and Rank: {rank}")
-    #    print(f"Shape_1: {tf.shape(X_loc_train)} and Rank: {rank}")
-    #    print(f"Shape_2: {tf.shape(y_train)} and Rank: {rank}")
-    # sys.exit()
-    
-    X_func_test, X_loc_test, y_test = utils.batch(valid_branch_input, 
-                                                  valid_trunk_input, 
-                                                  valid_exp_output, 
-                                                  hp.batch_size)
-    train_loss_ls = []
-    val_loss_ls = []
-            
+
+    ### Model creation
+    don_model = DeepONet_Model(md, opt, train_bin.shape[1], train_tin.shape[1])
+    logger.info('DeepONet model created')
+
+
+    early_stopping = utils.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
     begin_time = time.time()
-    t1 = time.time()
     for i in range(hp.n_epochs+1):
-        loss = train(don_model, train_branch_input, train_trunk_input, train_exp_output, i==0)
+
+        #train model on next batch
+        loss = train(don_model, train_batcher, i==0)
         avg_loss = hvd.allreduce(loss, average=True)
-       
-        if (i%500 == 0) and (rank==0):
-            print("saving model")       
-            don_model.save_weights(Par['address'] + "/model_"+str(i))
-        # if rank == 0:
-        #     print("epoch:" + str(i) + ", Avg Loss:" + "{:.3e}".format(avg_loss) +  ", elapsed time: " +  str(int(time.time()-begin_time)) + "s"  )
+    
+        if (i%hp.interval == 0):
 
-        
-        if (i%500 == 0):    
-            y_pred = don_model(X_func_train, X_loc_train)
-            local_loss = don_model.loss(y_pred, y_train)[0]
-            avg_loss = hvd.allreduce(local_loss, average=True)
-            train_loss = avg_loss.numpy()
-            train_loss_ls.append(train_loss)
-            y_pred = don_model(X_func_test, X_loc_test)
-            local_val_loss = don_model.loss(y_pred, y_test)[0]
-            val_loss = hvd.allreduce(local_val_loss, average=True)
-            val_loss_ls.append(val_loss.numpy())
-
-            if rank==0:
-                print("Rank:" + str(rank), "epoch:" + str(i) + ", Train Loss:" + "{:.3e}".format(train_loss) + ", Val Loss:" + "{:.3e}".format(val_loss) + ", elapsed time: " +  str(int(time.time()-begin_time)) + "s"  )
-
+            train_loss = get_loss(don_model, train_bin, train_tin, train_y_val).numpy()
+            valid_loss = get_loss(don_model, valid_bin, valid_tin, valid_y_val).numpy()
+            
             don_model.index_list.append(i)
             don_model.train_loss_list.append(train_loss)
-            don_model.val_loss_list.append(val_loss)
-        
+            don_model.val_loss_list.append(valid_loss)
+                        
+            if rank==0:
+                name = f"{rp.model_dir}/{rp.prepend}_model_{i:06}_vloss-{valid_loss:0.3f}"
+                logging.info("saving model")       
+                don_model.save_weights(name)
+                logger.info(f"Rank:{rank} epoch:{i}  Train Loss:{train_loss:.3e}, Val Loss:{valid_loss:.3e}, elapsed time:{int(time.time()-begin_time)} s" )
 
-'''
-    #Convergence plot
-    if rank==0:
-        index_list = don_model.index_list
-        train_loss_list = don_model.train_loss_list
-        val_loss_list = don_model.val_loss_list
-        np.savez(Par['address']+'/convergence_data', index_list=index_list, train_loss_list=train_loss_list, val_loss_list=val_loss_list)
+                if early_stopping(valid_loss):
+                    logger.info(f"Early stopping at epoch {i}")
+                    break
 
+
+def args_to_configs(args):
+    if args.acfg and not (args.rcfg or args.hcfg or args.mcfg or args.dcfg):
+        logger.debug('Single file')
+        config = utils.read_yaml(args.acfg)
+        rp = config.get('run_parameters')
+        hp = config.get('hyperparameters')
+        md = config.get('model')
+        dt = config.get('data')
+    elif not args.acfg and (args.rcfg and args.hcfg and args.mcfg and args.dcfg):
+        logger.debug('Multiple files')
+        rp = utils.read_yaml(args.rcfg)
+        hp = utils.read_yaml(args.hcfg)
+        md = utils.read_yaml(args.mcfg)
+        dt = utils.read_yaml(args.dcfg)
+    else:
+        logger.error("Incompatible arguments")
+        sys.exit()
+    return rp, hp, md, dt
             
-    #     plt.close()
-        fig = plt.figure(figsize=(10,7))
-        plt.plot(index_list, train_loss_list, label="train", linewidth=2)
-        plt.plot(index_list, val_loss_list, label="val", linewidth=2)
-        plt.legend(fontsize=16)
-        plt.yscale('log')
-        plt.xlabel("Epoch", fontsize=18)
-        plt.ylabel("MSE", fontsize=18)
-        plt.savefig(Par["address"] + "/convergence.png", dpi=800)
-        plt.close()
-        
-        val_loss_list[0]=1000.0
-        don_model_number = index_list[np.argmin(val_loss_list)]
-        print('Best DeepONet model: ', don_model_number)
-        print('--------Complete--------')
-'''
-
 if __name__=="__main__":
-    if nargs <1 :
-        print('Too few arguments!')
-    if nargs >1:
-        print('Too many arguments!')
-        
-    print('Running')
-    main(sys.argv[0])
+
+    
+    #Define input parameters
+    usage='%(prog)s <functional argument> <ouput target argument>'
+    description='DeepONet training tool'
+    parser = argparse.ArgumentParser(usage=usage,description=description)
+
+    arg_names = {'all':'a','run':'r','hyperparameter':'y','model':'m','data':'d'}
+    
+    for full, let in arg_names.items():
+        parser.add_argument(f'-{let}',
+                            f'--{full[:3]}',
+                            dest=f'{full[0]}cfg',
+                            help=f'{full} paramter config file',
+                            metavar="<{full} config yaml>",
+                            required=False)
+   
+    args = parser.parse_args()
+    # read in yaml files
+    rp, hp, md, dt = args_to_configs(args)
+    
+    main(rp, hp, md, dt)
+
 
