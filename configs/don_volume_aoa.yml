@@ -20,7 +20,7 @@ data_dir: "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
 branch_input_files: ['aoa_total.npy']
 trunk_input_files: ['trunk_in_0.npy','trunk_in_1.npy']
 don_output_files: ['y_out_0.npy','y_out_1.npy']
-# to be implemented!
+# to be implemented! - check the file hash against what you expect - in case files changed.
 #branch_input_file_hashes:
 #trunk_input_file_hashes:
 #don_output_file_hashes:
@@ -32,7 +32,11 @@ name: "hyperparameters"
 n_epochs: 50001
 batch_size: 12690717
 learning_rate: 0.0005
+interval: 500
+patience: 20
+min_delta: 0
 optimizer: "adam"
+two_step: False ## to be implemented - two step training method.
 ...
 ---
 #Deep O Net definition
@@ -42,12 +46,12 @@ random_seed: 1234
 einsum: "ij, kj-> ik"
 latent_dim: 25
 branch: 
-  #structure_file: ""
+  #structure_file: "" ## to be implemented - for more complex branch net
   width: 100
   depth: 4
   activation: "elu"
 trunk:
-  #structure_file: ""
+  #structure_file: "" ## to be implemented - for more complex trunk net
   width: 100 
   depth: 5
   activation: "relu"
