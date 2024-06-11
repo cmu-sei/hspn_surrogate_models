@@ -35,6 +35,7 @@ learning_rate: 0.0005
 interval: 500
 patience: 100
 min_delta: 0.0
+accumulate_count: 10
 optimizer: "adam"
 two_step: False ## to be implemented - two step training method.
 ...

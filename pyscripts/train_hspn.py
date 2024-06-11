@@ -22,6 +22,8 @@ import horovod.tensorflow as hvd
 
 from hspn import utils as utils
 from hspn.don import DeepONet_Model
+
+# for logging
 logging.basicConfig()
 logger = logging.getLogger("training script")
 formatter = logging.Formatter('%(name)s: %(asctime)s: %(levelname)s: %(message)s')
@@ -55,6 +57,7 @@ def setup_gpus():
     else:
         logger.warning("No GPUs found.")
 
+
 def setup_mixed_precision(hp):
     
     base_optimizer = tf.keras.optimizers.Adam(learning_rate=hp.learning_rate)
@@ -65,30 +68,49 @@ def setup_mixed_precision(hp):
     return optimizer
 
 @tf.function()
-def train(model, batcher, first_batch):
+def train(model, batcher, batch_no, accumulated_gradients, accumulate_count = 0):
     x_branch, x_trunk, y_true = next(batcher)
     with tf.GradientTape() as tape:
         
         y_pred = model(x_branch, x_trunk)
-        y_true = tf.cast(y_true, dtype=tf.float32)
-        y_pred = tf.cast(y_pred, dtype=tf.float32)  
+        y_true = tf.cast(y_true, dtype=tf.float16)
+        y_pred = tf.cast(y_pred, dtype=tf.float16)  
         loss = model.loss(y_pred, y_true)[0]
 
     tape = hvd.DistributedGradientTape(tape)    
     gradients = tape.gradient(loss, model.trainable_variables)
-    model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    if first_batch:
+    
+    if batch_no == 0:
         hvd.broadcast_variables(model.variables, root_rank=0)
         hvd.broadcast_variables(model.optimizer.variables(), root_rank=0)
-    return(loss)
+     
+    if accumulate_count ==0 :
+        model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        return (loss, [])
+    
+   # Accumulate gradients across iterations
+     
+    if batch_no % accumulate_count == 0 :
+        accumulated_gradients = [tf.zeros_like(grad) for grad in gradients] 
+    for i, grad in enumerate(gradients):
+        accumulated_gradients[i] += grad
+    
+    # Apply accumulated gradients every `accumulate_count` iterations
+    if (batch_no + 1) % accumulate_count == 0:
+        averaged_gradients = [gd/accumulate_count for gd in accumulated_gradients]
+        model.optimizer.apply_gradients(zip(averaged_gradients, model.trainable_variables))
+        for i, _ in enumerate(accumulated_gradients):
+            accumulated_gradients[i] = tf.zeros_like(gradients[i])
+    #local_step +=1
+    return loss, accumulated_gradients
 
 
 
 @tf.function()
 def get_loss(model, x_branch, x_trunk, y_true):
     y_pred = model(x_branch, x_trunk)
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)  
+    y_true = tf.cast(y_true, dtype=tf.float16)
+    y_pred = tf.cast(y_pred, dtype=tf.float16)  
     local_loss = model.loss(y_pred, y_true)[0]
     avg_loss = hvd.allreduce(local_loss, average=True)
     return avg_loss
@@ -118,9 +140,14 @@ def main(rp, hp, md, dt):
     early_stopping = utils.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
     begin_time = time.time()
     stop_training = False
+    accumulated_gradients = []
     for i in range(hp.n_epochs+1):
         #train model on next batch
-        loss = train(don_model, train_batcher, i == 0)
+        loss, accumulated_gradients = train(don_model, 
+                                            train_batcher, 
+                                            i, 
+                                            accumulated_gradients,
+                                            hp.accumulate_count)
         #avg_loss = hvd.allreduce(loss, average=True)
     
         if i%hp.interval == 0:
