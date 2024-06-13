@@ -68,28 +68,34 @@ def setup_mixed_precision(hp):
     return optimizer
 
 @tf.function()
-def train(model, batcher, batch_no, accumulated_gradients, accumulate_count = 0):
-    x_branch, x_trunk, y_true = next(batcher)
+def train(model, x_branch, x_trunk, y_true, first_batch):
+    
     with tf.GradientTape() as tape:
         
         y_pred = model(x_branch, x_trunk)
         y_true = tf.cast(y_true, dtype=tf.float16)
         y_pred = tf.cast(y_pred, dtype=tf.float16)  
-        loss = model.loss(y_pred, y_true)[0]
+        local_loss = model.loss(y_pred, y_true)[0]
 
     tape = hvd.DistributedGradientTape(tape)    
-    gradients = tape.gradient(loss, model.trainable_variables)
+    gradients = tape.gradient(local_loss, model.trainable_variables)
     
-    if batch_no == 0:
+    # ignore gradient accumulation for now.
+    #if accumulate_count ==0 :
+    model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    
+    if first_batch:
+        # Check variable consistency
+        for var in model.variables:
+            print(f"Variable name: {var.name}, Shape: {var.shape}, Dtype: {var.dtype}")
         hvd.broadcast_variables(model.variables, root_rank=0)
         hvd.broadcast_variables(model.optimizer.variables(), root_rank=0)
-     
-    if accumulate_count ==0 :
-        model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        return (loss, [])
+    
+    return(local_loss)
     
    # Accumulate gradients across iterations
-     
+     # TBD
+    '''
     if batch_no % accumulate_count == 0 :
         accumulated_gradients = [tf.zeros_like(grad) for grad in gradients] 
     for i, grad in enumerate(gradients):
@@ -101,8 +107,8 @@ def train(model, batcher, batch_no, accumulated_gradients, accumulate_count = 0)
         model.optimizer.apply_gradients(zip(averaged_gradients, model.trainable_variables))
         for i, _ in enumerate(accumulated_gradients):
             accumulated_gradients[i] = tf.zeros_like(gradients[i])
-    #local_step +=1
-    return loss, accumulated_gradients
+    return loss
+    '''
 
 
 
@@ -143,12 +149,14 @@ def main(rp, hp, md, dt):
     accumulated_gradients = []
     for i in range(hp.n_epochs+1):
         #train model on next batch
-        loss, accumulated_gradients = train(don_model, 
-                                            train_batcher, 
-                                            i, 
-                                            accumulated_gradients,
-                                            hp.accumulate_count)
-        #avg_loss = hvd.allreduce(loss, average=True)
+        x_branch, x_trunk, y_true = next(train_batcher)
+        
+        local_loss = train(don_model, 
+                     x_branch, 
+                     x_trunk, 
+                     y_true, 
+                     i==0)
+        loss = hvd.allreduce(local_loss, average=True)
     
         if i%hp.interval == 0:
             train_loss = get_loss(don_model, train_bin, train_tin, train_y_val).numpy()
