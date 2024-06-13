@@ -5,24 +5,24 @@
 
 #SBATCH --time=0:30:00
 
-##SBATCH --qos=debug
-#SBATCH --qos=frontier
+#SBATCH --qos=debug
+##SBATCH --qos=frontier
 
 #SBATCH --nodes=2
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
-#SBATCH --mem=12G
+#SBATCH --mem=4G
 
 #######################################################
 ## AI/ML nodes are GPU nodes with specialized hardware 
 ## and software to support machine-learning tasks. 
 ## To request an AI/ML node, use the directive:
-##SBATCH --constraint=mla
+#SBATCH --constraint=mla
 ##SBATCH --constraint=viz
 
 #################################################################
 ## Request GPU nodes - select one of the options below
-#SBATCH --gres=gpu:a100:4  # Same as mla
+#SBATCH --gres=gpu:a100:2  # Same as mla
 ##SBATCH --gres=gpu:a40:2   # Same as viz
 ##SBATCH --gres=gpu:2
 ##SBATCH --gres=gpu:4
