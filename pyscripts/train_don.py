@@ -120,7 +120,7 @@ def sample_train(X_func_ls, X_loc_ls, y_ls, batch_size):
      X_loc = X_loc
      y = y[idx, :]
      X_func = X_func_ls[idx, :]
-     return tensor(X_func), tensor(X_loc[:batch_size]), tensor(y[:batch_size])
+     return tensor(X_func), tensor(X_loc[:batch_size]), tensor(y[:,:batch_size])
 
 
 def sample_test(X_func_ls, X_loc_ls, y_ls, batch_size):
@@ -132,7 +132,7 @@ def sample_test(X_func_ls, X_loc_ls, y_ls, batch_size):
      X_loc = X_loc
      y = y[idx, :]
      X_func = X_func_ls[idx, :]
-     return tensor(X_func), tensor(X_loc[:batch_size]), tensor(y[:batch_size])
+     return tensor(X_func), tensor(X_loc[:batch_size]), tensor(y[:,:batch_size])
 
 
 
