@@ -1,6 +1,13 @@
 #! /bin/bash
+## sbatch your_slurm_script.sh -s your_script.py -c your_container.sif -v /path/to/volume
+## example values for jasmine
+
+## CONTAINER=/p/app/containers/tensorflow/tensorflow-22.03-tf2-py3.sif
+## SCRIPT=/p/home/jyuko/projects/hspn_surrogate_models/scripts/run_train_don.sh
+## VOLUMES=/p/home/jyuko,/p/work1/projects
+
 #SBATCH --account=ARLAP44862YFR
-#SBATCH --job-name=hyperspin_test
+#SBATCH --job-name=hspn_train_surrogate
 #SBATCH --partition=general
 
 #SBATCH --time=0:30:00
@@ -71,14 +78,40 @@ module load penguin/openmpi/4.1.4/gcc
 module load nvidia/openmpi/gnu/4.1
 module load cuda/cuda-12.4
 
-CONTAINER=/p/app/containers/tensorflow/tensorflow-22.03-tf2-py3.sif
-SCRIPT=/p/home/jyuko/projects/hspn_surrogate_models/scripts/run_train_don.sh
+
+## Default values
+SCRIPT=""
+CONTAINER=""
+VOLUMES=""
+WORKDIR=$PWD  ## Default to the present working directory
+
+## Parse command line options
+while getopts "s:c:v:" opt; do
+  case $opt in
+    s) SCRIPT=$OPTARG ;;
+    c) CONTAINER=$OPTARG ;;
+    v) VOLUMES=$OPTARG ;;
+    w) WORKDIR=$OPTARG ;;
+    \?) echo "Invalid option -$OPTARG" >&2 ;;
+  esac
+done
+
+## Check if required options are provided
+if [ -z "$SCRIPT" ] || [ -z "$CONTAINER" ] || [ -z "$VOLUMES" ]|| [ -z "$WORKDIR" ]; then
+  echo "Usage: $0 -s script -c container -v volumes -w workdir"
+  exit 1
+fi
+
+## Change to the specified working directory if provided
+cd $WORKDIR || { echo "Failed to change directory to $WORKDIR"; exit 1; }
+## Install
+mpirun -np 1 pip install --user -e .
 
 
 # Check GPU availability
 srun nvidia-smi
 
 # Run The Job Through Singularity
-echo "mpirun -np 2 singularity exec  -B /p/home/jyuko,/p/work1/projects --nv ${CONTAINER} ${SCRIPT}"
-mpirun -np 2 singularity exec  -B /p/home/jyuko,/p/work1/projects --nv $CONTAINER $SCRIPT
+echo "mpirun -np 2 singularity exec  -B ${VOLUMES} --nv ${CONTAINER} ${SCRIPT} -w ${WORKDIR}"
+mpirun -np 2 singularity exec  -B $VOLUMES --nv $CONTAINER $SCRIPT -w $WORKDIR
 #srun --partition=general --account=ARLAP44862YFR --qos=frontier --time=2:00:00 --constraint=mla --exclusive --gres=gpu:2 $CONTAINER $SCRIPT
