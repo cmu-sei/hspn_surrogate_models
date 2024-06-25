@@ -1,10 +1,10 @@
 # Specific training 
 ```
-sbatch <slurm_sscript> -s <bash_script_runs_training>  -c <container> -v <volumes>
+sbatch <slurm_script> -s <bash_script_runs_training>  -c <container> -v <volumes>
 ```
 example: 
 ```
-sbatch slurm/don_volume_aoa_batch -s scripts/run_train_don.sh  -c /p/app/containers/tensorflow/tensorflow-22.03-tf2-py3.sif -v /p/home/jyuko,/p/work1/projects
+sbatch slurm/submit -s scripts/run_train_don.sh  -c /p/app/containers/tensorflow/tensorflow-22.03-tf2-py3.sif -v /p/home/jyuko,/p/work1/projects
 ```
 
 
