@@ -1,3 +1,13 @@
+# Specific training 
+```
+sbatch <slurm_sscript> -s <bash_script_runs_training>  -c <container> -v <volumes>
+```
+example: 
+```
+sbatch slurm/don_volume_aoa_batch -s scripts/run_train_don.sh  -c /p/app/containers/tensorflow/tensorflow-22.03-tf2-py3.sif -v /p/home/jyuko,/p/work1/projects
+```
+
+
 # General HPC 
 
 ## slurm
@@ -53,3 +63,10 @@
     pip install -e .
     ```
     
+# Working through things with Bryan - Notes
+- My Questions:
+   - How to correctly split up batches per node/GPU and ensure it fits?
+   - Ways to integrate all of my scripts/options more seemlessly?
+   - Am I doing this right re: python/singularity/slurm
+   - Anything special I need to do to get this to run with qsub or other managers.
+   - improvements for performance/efficiency.
