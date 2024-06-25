@@ -30,7 +30,7 @@ don_output_files: ['y_out_0.npy','y_out_1.npy', 'y_out_2.npy','y_out_3.npy']
 document_type: 'train_config'
 name: "hyperparameters"
 n_epochs: 50001
-batch_size: 12690717 ##12690717
+batch_size: 126907 ##12690717
 learning_rate: 0.0005
 interval: 500
 patience: 100
