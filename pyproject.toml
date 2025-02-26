@@ -1,0 +1,43 @@
+[project]
+name = "hspn"
+version = "0.1.0"
+description = "deep operator networks for ARL CFD"
+readme = "README.md"
+authors = [
+  { name="Jasmine Ratchford", email="jratchford@sei.cmu.edu" },
+  { name = "Marco Christiani", email = "mchristiani@sei.cmu.edu" },
+]
+requires-python = ">=3.8"
+dependencies = [
+  # TODO: can we change the docker image? what does cluster have?
+  # tf's image has dependency conflicts, so we cant use uv to build unless we can update our tf image (ideal)
+  # for that reason, we use pip to build for now and no versions because we cant lock if the env cant resolve.
+  # "tensorflow==2.8.0",
+  "matplotlib",
+  "scikit-learn",
+  "scipy",
+  "jax",
+  "tqdm",
+  "pandas",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hspn"]
+
+# TODO: talk to @jratchford about the package structure, can cause import issues, should reorganize
+# Also, for ease of distribution may want to include the configs in the package.
+# [project.scripts]
+# hspn = "hspn:main"
+
+[template.plugins.default]
+src-layout = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
