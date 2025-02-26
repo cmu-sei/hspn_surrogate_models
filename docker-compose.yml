@@ -27,4 +27,4 @@ services:
     volumes:
       - .:/workspace:rw
       - /srv/cache/tensorflow:/root/.cache/tensorflow:rw
-      - /srv/hspn_data/for_marco_don_volume_data_nautilus/don_volume_data:/srv/hspn_data/for_marco_don_volume_data_nautilus/don_volume_data:ro
+      - /srv/hspn_data/:/srv/hspn_data/:ro
