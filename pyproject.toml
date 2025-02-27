@@ -20,6 +20,8 @@ dependencies = [
   "tqdm",
   "pandas",
   "pyyaml",
+  "tensorflow>=2.13.1; sys_platform == 'darwin'",
+  "keras>=2.13.1; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -28,15 +30,12 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["hspn"]
+packages = ["src/*"]
 
 # TODO: talk to @jratchford about the package structure, can cause import issues, should reorganize
 # Also, for ease of distribution may want to include the configs in the package.
 # [project.scripts]
 # hspn = "hspn:main"
-
-[template.plugins.default]
-src-layout = true
 
 [build-system]
 requires = ["hatchling"]
