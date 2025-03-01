@@ -22,6 +22,9 @@ dependencies = [
   "pyyaml",
   "tensorflow>=2.13.1; sys_platform == 'darwin'",
   "keras>=2.13.1; sys_platform == 'darwin'",
+  "hydra-core>=1.3.2",
+  "netcdf4 >= 1.7.2",
+  "pydantic>=2.10.0",
 ]
 
 [project.optional-dependencies]
@@ -33,9 +36,10 @@ dev = [
 packages = ["src/*"]
 
 # TODO: talk to @jratchford about the package structure, can cause import issues, should reorganize
-# Also, for ease of distribution may want to include the configs in the package.
-# [project.scripts]
+#   Also, for ease of distribution may want to include the configs in the package.
+ [project.scripts]
 # hspn = "hspn:main"
+hspn-preprocess = "hspn3.prepare:main"
 
 [build-system]
 requires = ["hatchling"]
