@@ -234,7 +234,7 @@ def create_hdf5_file(
         f.create_dataset("trunk", data=trunk_proc["data"])
 
         logger.info("Adding output data")
-        f.create_dataset("y", data=output_proc["data"])
+        f.create_dataset("output", data=output_proc["data"])
 
         # Add normalization data (method, axis, min/max/etc)
         norm_group = f.create_group("normalization")
