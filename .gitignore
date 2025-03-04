@@ -166,3 +166,10 @@ cython_debug/
 *.lock
 .ruff_cache
 .DS_Store
+
+# pixi environments
+.pixi
+*.egg-info
+**/*.npz
+**/*.pixi
+/outputs/

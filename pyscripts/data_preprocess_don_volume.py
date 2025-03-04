@@ -1,3 +1,13 @@
+"""Notes
+        |      in       |     shape      |     out     |  normalization |
+        |---------------|----------------|-------------|----------------|
+branch  | aoa_total.npy |    (21,1 )     | aoa_inf.npy |   minmax       |
+trunk   |    xyz.npy    | (50762870, 3)  |  x_inf.npy  | minmax axis=0  |
+output  | data_total.npy| (21, 50762870) | y_inf.npy   |  minmax        |
+
+branch: func
+trunk: spatial
+"""
 import numpy as np
 import os
 import scipy.io as sio
@@ -9,13 +19,15 @@ INPUT_FOLDER = "/p/work1/projects/FrontierX/don_volume_data"
 OUTPUT_FOLDER = "/p/work1/projects/FrontierX/hspn/data/don_volume_data"
 
 # Load data
-aoa = np.load(f'{INPUT_FOLDER}/aoa_total.npy', allow_pickle=True)
-xyz = np.load(f'{INPUT_FOLDER}/xyz.npy', allow_pickle=True)
-rho = np.load(f'{INPUT_FOLDER}/data_total.npy', allow_pickle=True)
+aoa = np.load(f'{INPUT_FOLDER}/aoa_total.npy', allow_pickle=True) # branch
+xyz = np.load(f'{INPUT_FOLDER}/xyz.npy', allow_pickle=True) # trunk
+rho = np.load(f'{INPUT_FOLDER}/data_total.npy', allow_pickle=True) # outputs
 
 
 aoa = aoa.reshape(-1, 1)
-X_func_ls = aoa  
+X_func_ls = aoa
+
+# Normalize trunk (xyz)
 X_loc_ls = xyz   
 s_min = np.min(X_loc_ls, axis=0)
 s_max = np.max(X_loc_ls, axis=0)
@@ -34,12 +46,13 @@ y_max = np.max(y_ls)
     
 print(f"Y Min: {y_min} and Ymax: {y_max}")
 
-
+# Rescale branch (aoa)
 aoa_min = np.min(aoa)
 aoa_max = np.max(aoa)
 aoa_loc_ls = (aoa - aoa_min)/(aoa_max - aoa_min)
 x_loc_ls = X_loc_ls
-y_ls = (y_ls - y_min)/(y_max - y_min) 
+# Rescale output (y)
+y_ls = (y_ls - y_min)/(y_max - y_min)
 
 norm_data = {"branch_min": aoa_min, "branch_max":aoa_max, "trunk_min": s_min, "trunk_max": s_max, "out_min": y_min, "out_max":y_max }
 
