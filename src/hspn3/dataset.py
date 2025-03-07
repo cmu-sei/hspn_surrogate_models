@@ -81,19 +81,11 @@ class H5Dataset(IterableDataset):
         """Yields complete batches."""
         n_trunk = self.trunk.shape[0]
         n_branch = self.branch.shape[0]
-        end = n_trunk + (
-            n_trunk % self.trunk_batch_size
-        )  # Account for an incomplete last batch
-        for trunk_start in range(0, end, self.trunk_batch_size):
+
+        for trunk_start in range(0, n_trunk, self.trunk_batch_size):
             trunk_end = min(trunk_start + self.trunk_batch_size, n_trunk)
-            end = n_branch + (
-                n_branch % self.branch_batch_size
-            )  # Account for an incomplete last batch
-            for branch_start in range(0, end, self.branch_batch_size):
+            for branch_start in range(0, n_branch, self.branch_batch_size):
                 branch_end = min(branch_start + self.branch_batch_size, n_branch)
-                logging.info(
-                    f"    yielding branch slice: {branch_start}:{branch_end} trunk slice: {trunk_start}:{trunk_end}"
-                )
                 yield (
                     torch.tensor(
                         self.branch[branch_start:branch_end], dtype=self.dtype
@@ -104,6 +96,19 @@ class H5Dataset(IterableDataset):
                         dtype=self.dtype,
                     ),
                 )
+
+    def __len__(self):
+        """Return the total number of batches that will be yielded."""
+        n_trunk = self.trunk.shape[0]
+        n_branch = self.branch.shape[0]
+
+        # Number of trunk batches, including partial batches
+        trunk_batches = (n_trunk + self.trunk_batch_size - 1) // self.trunk_batch_size
+
+        # Number of branch batches, including partial batches
+        branch_batches = (n_branch + self.branch_batch_size - 1) // self.branch_batch_size
+
+        return trunk_batches * branch_batches
 
     def close(self) -> None:
         """Close the data file."""
@@ -156,8 +161,8 @@ def build_dataloader(
 
 if __name__ == "__main__":
     # Runs a simple smoke test
-    from pathlib import Path
     import os
+    from pathlib import Path
 
     data_path = Path(os.environ["HSPN_H5_PATH"]).expanduser()
 
