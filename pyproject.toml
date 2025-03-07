@@ -36,12 +36,20 @@ dev = [
 # TODO: talk to @jratchford about the package structure, can cause import issues, should reorganize
 #   Also, for ease of distribution may want to include the configs in the package.
  [project.scripts]
-# hspn = "hspn:main"
-hspn-preprocess = "hspn3.prepare:main"
+hspn-preprocess = "hspn.prepare:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "src/*"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hspn"]
+
 [tool.ruff]
 ignore = ["N813"]
 
