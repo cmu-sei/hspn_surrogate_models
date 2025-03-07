@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/tensorflow:22.03-tf2-py3
+FROM nvcr.io/nvidia/pytorch:23.09-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 # ENV UV_COMPILE_BYTECODE=0 UV_LINK_MODE=symlink
