@@ -1,0 +1,68 @@
+defaults:
+  - train_spec
+  - _self_
+  # - model: deep_operator
+  # - dataset: default
+  # - optimizer: adam
+  # - scheduler: cosine
+
+# Basic training parameters
+seed: 42
+n_epochs: 1
+comm_backend: nccl
+log_interval: 50 # number of batches
+
+# Model configuration
+model:
+  _target_: hspn3.model.DeepOperatorNet
+  branch_dim: 1
+  trunk_dim: 3
+  branch_config:
+    width: 100
+    depth: 4
+    activation:
+      _target_: torch.nn.ELU
+  trunk_config:
+    width: 100
+    depth: 5
+    activation:
+      _target_: torch.nn.ReLU
+  latent_dim: 25
+  einsum_pattern: ij,kj->ik
+
+# Data configuration
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  dataset:
+    _target_: hspn3.dataset.H5Dataset
+    file_path: ${extra.data_dir}/don_dataset.h5
+    # TODO: support uneven batch sizes? ask jasmine
+    branch_batch_size: 100000
+    trunk_batch_size: 100000
+  batch_size: null  # Do not change this
+  shuffle: false # Do not change this
+  num_workers: 0
+  pin_memory: true
+  prefetch_factor: null
+
+# Optimizer configuration
+optimizer_factory:
+  # _target_: torch.optim.${optimizer.name}
+  _target_: torch.optim.SGD
+  _partial_: true
+  lr: 0.0005
+  # lr: ${optimizer.lr}
+  # weight_decay: ${optimizer.weight_decay}
+
+# Scheduler configuration
+scheduler_factory: null
+#   _target_: torch.optim.lr_scheduler.${scheduler.name}
+#   _partial_: true
+#   T_max: ${n_epochs}
+#   eta_min: ${scheduler.eta_min}
+
+extra:
+  data_dir: ${oc.env:DATA_DIR,./data}
+
+hydra:
+  output_subdir: hydra
