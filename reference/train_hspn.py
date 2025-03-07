@@ -4,12 +4,13 @@ import os
 import sys
 import time
 
+import src.hspn2.train
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
 
 import tensorflow as tf
-from tensorflow.keras.mixed_precision import experimental as mixed_precision, LossScaleOptimizer
+# from tensorflow.keras.mixed_precision import experimental as mixed_precision, LossScaleOptimizer
 
 import horovod.tensorflow as hvd
 
@@ -113,10 +114,11 @@ def get_loss(model, x_branch, x_trunk, y_true):
 
 
 def main(rp, hp, md, dt):
-    setup_gpus()
+    # setup_gpus()
 
     ### Distributed optimizer
-    opt = setup_mixed_precision(hp)
+    # opt = setup_mixed_precision(hp)
+    opt = tf.keras.optimizers.Adam(learning_rate=hp.learning_rate)
 
     ### Data loading
     train_bin, train_tin, train_y_val = utils.get_data(dt, "train", hvd.rank())
@@ -129,7 +131,7 @@ def main(rp, hp, md, dt):
     don_model = DeepONet_Model(md, opt, train_bin.shape[1], train_tin.shape[1])
     logger.info("DeepONet model created")
 
-    early_stopping = utils.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
+    early_stopping = src.hspn2.train.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
     begin_time = time.time()
     stop_training = False
     accumulated_gradients = []
