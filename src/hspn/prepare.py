@@ -19,7 +19,7 @@ Usage:
 
 import logging
 import os
-from dataclasses import field
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional, TypedDict
@@ -30,7 +30,6 @@ import netCDF4 as nc  # noqa: N813
 import numpy as np
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
-from pydantic.dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +189,7 @@ def load_npy_files(
         b_offset += b_size
         t_offset += t_size
 
-    logger.info(f"Combined data shapes:")
+    logger.info("Combined data shapes:")
     logger.info(f"  Branch: {branch_data.shape}")
     logger.info(f"  Trunk: {trunk_data.shape}")
     logger.info(f"  Output: {output_data.shape}")
