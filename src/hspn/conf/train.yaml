@@ -14,7 +14,7 @@ log_interval: 50 # number of batches
 
 # Model configuration
 model:
-  _target_: hspn3.model.DeepOperatorNet
+  _target_: hspn.model.DeepOperatorNet
   branch_dim: 1
   trunk_dim: 3
   branch_config:
@@ -34,7 +34,7 @@ model:
 dataloader:
   _target_: torch.utils.data.DataLoader
   dataset:
-    _target_: hspn3.dataset.H5Dataset
+    _target_: hspn.dataset.H5Dataset
     file_path: ${extra.data_dir}/don_dataset.h5
     # TODO: support uneven batch sizes? ask jasmine
     branch_batch_size: 100000

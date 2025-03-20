@@ -12,7 +12,9 @@ import torch.optim as optim
 logger = logging.getLogger(__name__)
 
 
-def setup_distributed(backend: str = Literal["nccl", "gloo"]) -> tuple[int, int]:
+def setup_distributed(
+    backend: Literal["nccl", "gloo"] = "nccl",
+) -> tuple[int, int]:
     """Initialize distributed environment with support for SLURM.
 
     Handles both Slurm and manual initialization.
@@ -107,7 +109,7 @@ def save_checkpoint(
 
     checkpoint = {
         "epoch": epoch,
-        "model_state_dict": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
+        "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict() if optimizer else None,
         "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
         "metrics": metrics,
@@ -150,10 +152,7 @@ def load_checkpoint(
 
     # Load model weights if provided
     if model is not None:
-        if hasattr(model, "module"):
-            model.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     # Load optimizer state if provided
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
@@ -164,6 +163,3 @@ def load_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     return checkpoint
-
-
-

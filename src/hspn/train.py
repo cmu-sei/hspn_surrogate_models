@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from dataclasses import dataclass
 from torch import nn, optim
 
-from hspn3.train_utils import setup_distributed
+from hspn.train_utils import setup_distributed
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,10 @@ class TrainConfig:
     comm_backend: Any  # Literal["nccl", "gloo"]
     log_interval: int
     extra: Any
-    _target_: str = "hspn3.train.TrainConfig"
+    _target_: str = "hspn.train.TrainConfig"
 
     def validate(self):
+        """Validate after config is instantiated."""
         if self.dataloader.batch_size and self.dataloader.batch_size != 1:
             raise ValueError(
                 f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by the dataset. "
@@ -45,7 +46,7 @@ class TrainConfig:
 ConfigStore.instance().store("train_spec", TrainConfig)
 
 
-@hydra.main(config_path="pkg://hspn3.conf", config_name="train", version_base=None)
+@hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
 def main(cfg: DictConfig) -> float:
     torch.manual_seed(cfg.seed)
     rank, world_size = setup_distributed()
@@ -85,7 +86,14 @@ def main(cfg: DictConfig) -> float:
                 dataloader
             ):  # do we have to set the dataloader sampler epoch? We just have an iterable dataset.
                 model_device = model.curr_device()
-                loss = model.training_step((branch_in.to(model_device), trunk_in.to(model_device), output.to(model_device)), i)
+                loss = model.training_step(
+                    (
+                        branch_in.to(model_device),
+                        trunk_in.to(model_device),
+                        output.to(model_device),
+                    ),
+                    i,
+                )
 
                 if torch.isnan(loss):
                     print(f"NaN detected at batch {i}")
