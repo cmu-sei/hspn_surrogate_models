@@ -16,6 +16,7 @@ useradd --uid $uid --gid $gid --create-home --home-dir $HOME $USER
 usermod -aG root $USER
 passwd -d $USER
 !
+export PATH=$PATH:$HOME/.local/bin
 
 umask 0002
 /opt/nvidia/nvidia_entrypoint.sh $@
