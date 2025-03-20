@@ -17,6 +17,7 @@ usermod -aG root $USER
 passwd -d $USER
 !
 export PATH=$PATH:$HOME/.local/bin
+pip install -e .
 
 umask 0002
 /opt/nvidia/nvidia_entrypoint.sh $@

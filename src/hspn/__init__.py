@@ -20,4 +20,3 @@ def setup_logging(log_dir: str = "logs", log_level: str = "INFO") -> None:
     )
     logging.info(f"Logging configured with level {log_level}")
 
-setup_logging()
