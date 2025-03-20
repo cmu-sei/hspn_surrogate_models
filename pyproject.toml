@@ -27,6 +27,7 @@ dev = [
 #   Also, for ease of distribution may want to include the configs in the package.
  [project.scripts]
 hspn-preprocess = "hspn.prepare:main"
+hspn-train = "hspn.train:main"
 
 [build-system]
 requires = ["hatchling"]
