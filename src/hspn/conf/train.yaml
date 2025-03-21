@@ -47,7 +47,6 @@ dataloader:
 
 # Optimizer configuration
 optimizer_factory:
-  # _target_: torch.optim.${optimizer.name}
   _target_: torch.optim.SGD
   _partial_: true
   lr: 0.0005

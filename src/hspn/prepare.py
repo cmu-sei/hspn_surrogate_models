@@ -15,6 +15,13 @@ Usage:
      branch_normalization.method=MINMAX \
      trunk_normalization.method=MINMAX trunk_normalization.axis=0 \
      output_normalization.method=MINMAX
+
+    hspn-preprocess format=HDF5 data_dir=$(DATA_DIR) \
+        branch_files=[aoa_total.npy] trunk_files=[xyz.npy] \
+        output_files=[data_total.npy] \
+        branch_normalization.method=MINMAX \
+        trunk_normalization.method=MINMAX trunk_normalization.axis=0 \
+        output_normalization.method=MINMAX $(OPTS)
 """
 
 import logging
@@ -22,7 +29,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, TypedDict
+from typing import List, Optional, TypedDict, Union, Tuple
 
 import h5py
 import hydra
@@ -103,7 +110,7 @@ class StandardNormResult(TypedDict):
 
 def normalize_data(
     data: np.ndarray, config: NormalizationConfig, name: str = ""
-) -> NoneNormResult | MinMaxNormResult | StandardNormResult:
+) -> Union[NoneNormResult, MinMaxNormResult, StandardNormResult]:
     """Normalize data using the specified method."""
     if config.method == NormMethod.NONE:
         logger.info(f"Skipping normalization for {name}")
@@ -131,7 +138,7 @@ def normalize_data(
 
 def load_npy_files(
     data_dir: str, branch_files: List[str], trunk_files: List[str], output_files: List[str]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load data from numpy files and combine them if multiple files are provided."""
     if not (len(branch_files) == len(trunk_files) == len(output_files)):
         raise ValueError("Number of branch, trunk, and output files must be the same")
@@ -211,6 +218,9 @@ def create_hdf5_file(
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     # Process data
+    config.branch_normalization = NormalizationConfig(**config.branch_normalization)
+    config.trunk_normalization = NormalizationConfig(**config.trunk_normalization)
+    config.output_normalization = NormalizationConfig(**config.output_normalization)
     branch_proc = normalize_data(branch_data, config.branch_normalization, "branch")
     trunk_proc = normalize_data(trunk_data, config.trunk_normalization, "trunk")
     output_proc = normalize_data(output_data, config.output_normalization, "output")

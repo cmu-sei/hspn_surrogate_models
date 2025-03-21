@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Optional, Union, Tuple, Dict
 
 import torch
 import torch.distributed as dist
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def setup_distributed(
     backend: Literal["nccl", "gloo"] = "nccl",
-) -> tuple[int, int]:
+) -> Tuple[int, int]:
     """Initialize distributed environment with support for SLURM.
 
     Handles both Slurm and manual initialization.
@@ -86,11 +86,11 @@ def save_checkpoint(
     filepath: Path,
     model: nn.Module,
     optimizer: optim.Optimizer,
-    scheduler: Any | None,
+    scheduler: Optional[Any],
     epoch: int,
-    metrics: dict[str, float],
+    metrics: Dict[str, float],
     is_best: bool = False,
-    extra: dict[str, Any] | None = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save model checkpoint.
 
@@ -129,11 +129,11 @@ def save_checkpoint(
 
 def load_checkpoint(
     filename: Path,
-    model: nn.Module | None = None,
-    optimizer: optim.Optimizer | None = None,
-    scheduler: Any | None = None,
-    map_location: str | torch.device | None = None,
-) -> dict[str, Any]:
+    model: Union[nn.Module, None] = None,
+    optimizer: Union[optim.Optimizer, None] = None,
+    scheduler: Union[Any, None] = None,
+    map_location: Union[str, torch.device, None] = None,
+) -> Dict[str, Any]:
     """Load model checkpoint.
 
     Args:

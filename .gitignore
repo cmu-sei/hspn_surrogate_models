@@ -175,3 +175,7 @@ cython_debug/
 # hydra
 /outputs/
 /multirun/
+
+# logs
+*.out
+*.err

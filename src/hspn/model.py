@@ -1,7 +1,7 @@
 """Deep Operator Network implementation."""
 
 import logging
-from typing import TypedDict
+from typing import TypedDict, Tuple
 
 import torch
 import torch.nn as nn
@@ -115,7 +115,7 @@ class DeepOperatorNet(nn.Module):
         )  # (branch_bs, trunk_bs)
 
     def training_step(
-        self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
+        self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
         """Forward pass and compute loss.
 

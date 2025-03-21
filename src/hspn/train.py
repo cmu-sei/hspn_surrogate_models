@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, TypeVar
+from typing import Any, TypeVar, Optional
 
 import hydra
 import torch
@@ -26,7 +26,7 @@ class TrainConfig:
     model: Any
     dataloader: Any  # torch.utils.data.DataLoader
     optimizer_factory: Any
-    scheduler_factory: Any | None
+    scheduler_factory: Optional[Any]
     # optimizer_factory: Callable[[...], Optimizer]
     # scheduler_factory: Callable[[...], LRScheduler]
     comm_backend: Any  # Literal["nccl", "gloo"]
