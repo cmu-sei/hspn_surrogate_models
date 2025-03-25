@@ -3,7 +3,8 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from pprint import pformat
+from typing import Any, Dict, Literal, Optional, OrderedDict, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -145,17 +146,12 @@ def load_checkpoint(
     """
     logger.info(f"Loading checkpoint from {filepath!s}")
 
-    checkpoint = torch.load(filepath, map_location=map_location)
-    ts = checkpoint.get("timestamp")
-    metrics = checkpoint.get("metrics")
-    extra = checkpoint.get("extra")
+    checkpoint = torch.load(filepath, map_location=map_location, weights_only=True)
     logger.info("Loaded checkpoint")
-    if ts:
-        logger.info(f"\ttimestamp: {ts}")
-    if metrics:
-        logger.info(f"\tmetrics: {json.dumps(metrics)}")
-    if extra:
-        logger.info(f"\textra: {json.dumps(extra)}")
+    for k, v in checkpoint.items():
+        if "state" in k or isinstance(v, (OrderedDict, torch.Tensor)):
+            continue
+        logger.info(f"\t{k}: {pformat(v)}")
 
     if model is not None:
         logger.info("Loading model state")
