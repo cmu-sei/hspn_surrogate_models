@@ -179,3 +179,4 @@ cython_debug/
 # logs
 *.out
 *.err
+.aim
