@@ -2,8 +2,7 @@ import logging
 import pprint
 from pathlib import Path
 import time
-from typing import Any, Callable, Literal, Optional
-from tqdm import tqdm
+from typing import Any, Callable, Dict, Literal, Optional
 import hydra
 from omegaconf.omegaconf import OmegaConf
 import torch
@@ -16,8 +15,8 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from tqdm.contrib.logging import tqdm_logging_redirect
 
-from hspn import train_utils
 from hspn.dataset import H5Dataset
+from hspn.tracker import Tracker
 from hspn.train_utils import load_checkpoint, save_checkpoint, setup_distributed
 
 logger = logging.getLogger(__name__)
@@ -34,6 +33,7 @@ class TrainConfig:
     scheduler_factory: Callable[..., LRScheduler]
     comm_backend: Literal["nccl", "gloo"]
     log_interval: int
+    tracker_config: Dict[str, Any]
     extra: Optional[Any] = None
 
     def __post_init__(self):
@@ -64,6 +64,7 @@ def main(cfg: DictConfig) -> float:
     total_loss = 0
     epoch = 0
     start_time = time.time()
+    tracker = None
     try:
         # Make sure we instantiate after setting up distributed since some components are distributed-aware
         config: TrainConfig = TrainConfig(**hydra.utils.instantiate(cfg))
@@ -86,8 +87,11 @@ def main(cfg: DictConfig) -> float:
         model.to(device)
 
         epoch = 0
-        if config.checkpoint_dir.exists():
-            latest = sorted(list(config.checkpoint_dir.glob("checkpoint_*.pt")))[-1]
+        global_step = 0
+        if config.checkpoint_dir.exists() and (
+            ckpts := list(config.checkpoint_dir.glob("checkpoint_*.pt"))
+        ):
+            latest = sorted(ckpts)[-1]
             ckpt = load_checkpoint(
                 latest,
                 model=model,
@@ -96,16 +100,18 @@ def main(cfg: DictConfig) -> float:
                 map_location=device,
             )
             epoch = ckpt["epoch"]
+            global_step = ckpt.get("global_step", 0)
             if epoch >= config.n_epochs:
                 logger.warning(
                     f"Loaded checkpoint has epoch={ckpt['epoch']} >= {config.n_epochs=}"
                 )
 
+        tracker = Tracker(**config.tracker_config) if rank == 0 else None
+
         for epoch in range(epoch, config.n_epochs):
             epoch_total_loss = 0.0
             epoch_batches = 0
             epoch_start_time = time.time()
-
             epoch_elapsed = 0
             with tqdm_logging_redirect(
                 dataloader,
@@ -133,18 +139,18 @@ def main(cfg: DictConfig) -> float:
                     optimizer.step()
                     if scheduler:
                         scheduler.step()
-
-                    epoch_total_loss += loss.item()
+                    loss_val = loss.item()
+                    epoch_total_loss += loss_val
                     epoch_batches += 1
+                    global_step += 1
                     epoch_elapsed = time.time() - epoch_start_time
-                    progress_bar.set_postfix(
-                        loss=loss.item(), avg=epoch_total_loss / (epoch_batches + 1e-8)
-                    )
+                    avg_loss = epoch_total_loss / epoch_batches
+                    progress_bar.set_postfix(loss=loss_val, avg=avg_loss)
 
                     if i > 0 and i % config.log_interval == 0:
                         logger.info(
                             f"Epoch {epoch} [{i}/{len(dataloader)}] "
-                            f"Loss: {loss.item():.6f}, "
+                            f"Loss: {loss_val:.6f}, "
                             f"Epoch Time Elapsed: {epoch_elapsed:.3f}s"
                         )
 
@@ -163,9 +169,24 @@ def main(cfg: DictConfig) -> float:
                         metrics={
                             "loss": best_epoch_total_loss,
                             "epoch_time_elapsed": epoch_elapsed,
+                            "global_step": global_step,
                         },
                         extra=cfg_dict,
                     )
+
+                if rank == 0 and tracker:
+                    avg_loss = epoch_total_loss / epoch_batches
+                    print("logging", epoch, global_step)
+                    tracker.log_scalar("train/epoch", epoch, global_step)
+                    tracker.log_scalar("train/loss", epoch_total_loss, global_step)
+                    tracker.log_scalar("train/avg_loss", avg_loss, global_step)
+
+                    current_lr = (
+                        scheduler.get_last_lr()[0]
+                        if scheduler
+                        else optimizer.param_groups[0]["lr"]
+                    )
+                    tracker.log_scalar("train/learning_rate", current_lr, global_step)
 
                 logger.info(f"{epoch_total_loss=} {epoch_batches=}")
                 total_batches += epoch_batches
@@ -179,6 +200,8 @@ def main(cfg: DictConfig) -> float:
         raise
     finally:
         # We always clean up
+        if rank == 0 and tracker:
+            tracker.close()
         if dist.is_initialized():
             dist.destroy_process_group()
         logger.info(

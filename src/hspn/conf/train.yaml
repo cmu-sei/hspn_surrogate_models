@@ -53,8 +53,18 @@ scheduler_factory: null
 #   T_max: ${n_epochs}
 #   eta_min: ${scheduler.eta_min}
 
+tracker_config: ${extra.aim_config}
+
 extra:
   data_dir: ${oc.env:DATA_DIR,./data}
+  tb_config:
+    log_dir: ${checkpoint_dir}
+    backend: tensorboard
+    experiment_name: ${now:%Y-%m-%d_%H-%M-%S}_${hydra:job.name}
+  aim_config:
+    log_dir: .
+    backend: aim
+    experiment_name: ${now:%Y-%m-%d_%H-%M-%S}_${hydra:job.name}
 
 hydra:
   output_subdir: hydra
