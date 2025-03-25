@@ -14,6 +14,7 @@ from torch import nn
 from torch.optim.optimizer import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
+from tqdm.contrib.logging import tqdm_logging_redirect
 
 from hspn import train_utils
 from hspn.dataset import H5Dataset
@@ -104,18 +105,14 @@ def main(cfg: DictConfig) -> float:
             epoch_total_loss = 0.0
             epoch_batches = 0
             epoch_start_time = time.time()
-            from tqdm.contrib.logging import logging_redirect_tqdm
 
             epoch_elapsed = 0
-            with logging_redirect_tqdm():
-                progress_bar = tqdm(
-                    dataloader,
-                    desc=f"Epoch {epoch}",
-                    unit="batch",
-                    disable=(rank != 0),
-                    # file=sys.stdout,
-                    # leave=False
-                )
+            with tqdm_logging_redirect(
+                dataloader,
+                desc=f"Epoch {epoch}",
+                unit="batch",
+                disable=(rank != 0),
+            ) as progress_bar:
                 for (
                     i,
                     (branch_in, trunk_in, output),
