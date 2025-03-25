@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from torch import nn, optim
 
 from hspn.train_utils import setup_distributed
+from hspn.train_utils import save_checkpoint, setup_distributed
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,14 @@ def main(cfg: DictConfig) -> float:
             epoch_total_loss = 0.0
             epoch_batches = 0
             epoch_start_time = time.time()
+            epoch_elapsed = 0
             for (
                 i,
                 (branch_in, trunk_in, output),
             ) in enumerate(
                 dataloader
             ):  # do we have to set the dataloader sampler epoch? We just have an iterable dataset.
+            ) in enumerate(dataloader):
                 model_device = model.curr_device()
                 loss = model.training_step(
                     (
@@ -111,18 +114,33 @@ def main(cfg: DictConfig) -> float:
 
                 epoch_total_loss += loss.item()
                 epoch_batches += 1
+                epoch_elapsed = time.time() - epoch_start_time
 
                 if i > 0 and i % config.log_interval == 0:
                     logger.info(
                         f"Epoch {epoch} [{i}/{len(dataloader)}] "
                         f"Loss: {loss.item():.6f}, "
-                        f"Epoch Time Elapsed: {time.time() - epoch_start_time:.3f}s"
+                        f"Epoch Time Elapsed: {epoch_elapsed:.3f}s"
                     )
             if epoch_total_loss < best_epoch_total_loss:
                 best_epoch_total_loss = epoch_total_loss
                 best_epoch = epoch
                 logger.info(f"New Best Epoch: {epoch}")
-                # TODO: checkpoint
+                cfg_dict = OmegaConf.to_container(cfg)
+                assert isinstance(cfg_dict, dict)
+                save_checkpoint(
+                    config.checkpoint_dir,
+                    model.module if hasattr(model, "module") else model,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    metrics={
+                        "loss": best_epoch_total_loss,
+                        "epoch_time_elapsed": epoch_elapsed,
+                    },
+                    extra=cfg_dict,
+                )
+
             logger.info(f"{epoch_total_loss=} {epoch_batches=}")
             total_batches += epoch_batches
             total_loss += epoch_total_loss

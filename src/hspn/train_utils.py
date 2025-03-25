@@ -1,8 +1,9 @@
+import json
 import logging
 import os
-from pathlib import Path
 from datetime import datetime
-from typing import Any, Literal, Optional, Union, Tuple, Dict
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -89,8 +90,7 @@ def save_checkpoint(
     scheduler: Optional[Any],
     epoch: int,
     metrics: Dict[str, float],
-    is_best: bool = False,
-    extra: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict] = None,
 ) -> None:
     """Save model checkpoint.
 
@@ -101,9 +101,12 @@ def save_checkpoint(
         scheduler: Learning rate scheduler to save (optional)
         epoch: Current epoch number
         metrics: Dictionary of metrics to save
-        is_best: Whether this is the best model so far
         extra: Any extra metadata to save
     """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+
+    if rank != 0:
+        return
     filepath = filepath.resolve()
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -118,12 +121,6 @@ def save_checkpoint(
     }
 
     torch.save(checkpoint, filepath)
-
-    if is_best:
-        best_filepath = filepath.with_stem("best_model")
-        torch.save(checkpoint, best_filepath)
-        logger.info(f"Saved best model to {best_filepath!s}")
-
     logger.info(f"Saved checkpoint to {filepath!s}")
 
 
@@ -149,17 +146,27 @@ def load_checkpoint(
     logger.info(f"Loading checkpoint from {filename!s}")
 
     checkpoint = torch.load(filename, map_location=map_location)
+    ts = checkpoint.get("timestamp")
+    metrics = checkpoint.get("metrics")
+    extra = checkpoint.get("extra")
+    logger.info("Loaded checkpoint")
+    if ts:
+        logger.info(f"\ttimestamp: {ts}")
+    if metrics:
+        logger.info(f"\tmetrics: {json.dumps(metrics)}")
+    if extra:
+        logger.info(f"\textra: {json.dumps(extra)}")
 
-    # Load model weights if provided
     if model is not None:
+        logger.info("Loading model state")
         model.load_state_dict(checkpoint["model_state_dict"])
 
-    # Load optimizer state if provided
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        logger.info("Loading optimizer state")
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
-    # Load scheduler state if provided
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        logger.info("Loading scheduler state")
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     return checkpoint
