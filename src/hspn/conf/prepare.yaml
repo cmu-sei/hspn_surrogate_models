@@ -1,0 +1,19 @@
+defaults:
+  - prepare_spec
+  - _self_
+
+format: HDF5
+data_dir: ???
+output_path: ''
+force: false
+branch_files: [aoa_total.npy]
+trunk_files: [xyz.npy]
+output_files: [data_total.npy]
+branch_normalization:
+  method: MINMAX
+trunk_normalization:
+  method: MINMAX
+  axis: 0
+output_normalization:
+  method: MINMAX
+

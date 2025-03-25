@@ -6,22 +6,13 @@ over chunking. Chunking might be added back, but can be modified other ways and 
 NB: NetCDF produces some big files.
 
 Usage:
-    python prepare.py format=hdf5 data_dir=./data  branch_files=[branch.npy]
-    python prepare.py format=netcdf data_dir=./data branch_files=[branch.npy]
-    python prepare.py format=hdf5 data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy]
-    # To match the original processing script:
-    python prepare.py format=HDF5 data_dir=./data branch_files=[aoa_total.npy] trunk_files=[xyz.npy] \
-     output_files=[data_total.npy] \
-     branch_normalization.method=MINMAX \
-     trunk_normalization.method=MINMAX trunk_normalization.axis=0 \
-     output_normalization.method=MINMAX
+    python -m hspn.prepare --help
+    python -m hspn.prepare format=HDF5 data_dir=./data
+    python -m hspn.prepare format=HDF5 data_dir=./data  branch_files=[branch.npy]
+    python -m hspn.prepare format=NETCDF data_dir=./data branch_files=[branch.npy]
+    python -m hspn.prepare format=HDF5 data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy]
 
-    hspn-preprocess format=HDF5 data_dir=$(DATA_DIR) \
-        branch_files=[aoa_total.npy] trunk_files=[xyz.npy] \
-        output_files=[data_total.npy] \
-        branch_normalization.method=MINMAX \
-        trunk_normalization.method=MINMAX trunk_normalization.axis=0 \
-        output_normalization.method=MINMAX $(OPTS)
+Note: Default config is prepare.yaml which can also be edited directly if desired.
 """
 
 import logging
@@ -54,12 +45,14 @@ class NormMethod(str, Enum):
 
 @dataclass
 class NormalizationConfig:
+    _target_: str = "hspn.prepare.NormalizationConfig"
     method: NormMethod = NormMethod.NONE
     axis: Optional[int] = None
 
 
 @dataclass
 class ConversionConfig:
+    _target_: str = "hspn.prepare.ConversionConfig"
     format: FormatType = FormatType.HDF5
     data_dir: str = "./data"
     output_path: str = ""
@@ -80,16 +73,15 @@ def validate_shapes(branch_data: np.ndarray, trunk_data: np.ndarray, output_data
     logger.info(f"Trunk shape:\t{trunk_data.shape}")
     logger.info(f"Output shape:\t{output_data.shape}")
 
-    valid = True
     if output_data.shape[0] != branch_data.shape[0]:
         logger.error("First dimension of output should be the same as first dimension of branch")
-        valid = False
+        return False
 
     if output_data.shape[1] != trunk_data.shape[0]:
         logger.error("Second dimension of output should be the same as first dimension of trunk")
-        valid = False
+        return False
 
-    return valid
+    return True
 
 
 class NoneNormResult(TypedDict):
@@ -218,9 +210,6 @@ def create_hdf5_file(
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     # Process data
-    config.branch_normalization = NormalizationConfig(**config.branch_normalization)
-    config.trunk_normalization = NormalizationConfig(**config.trunk_normalization)
-    config.output_normalization = NormalizationConfig(**config.output_normalization)
     branch_proc = normalize_data(branch_data, config.branch_normalization, "branch")
     trunk_proc = normalize_data(trunk_data, config.trunk_normalization, "trunk")
     output_proc = normalize_data(output_data, config.output_normalization, "output")
@@ -382,14 +371,15 @@ def create_netcdf_file(
     logger.info("NetCDF file created.")
 
 
-ConfigStore.instance().store("prepare_data", ConversionConfig)
+ConfigStore.instance().store("prepare_spec", ConversionConfig)
 
 
-@hydra.main(version_base="1.2", config_name="prepare_data")
+@hydra.main(config_path="pkg://hspn.conf", config_name="prepare", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Main entry point for data preparation."""
-    config_dict = OmegaConf.to_container(cfg, resolve=True)
-    config = ConversionConfig(**config_dict)
+    OmegaConf.resolve(cfg)
+    logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
+    config: ConversionConfig = hydra.utils.instantiate(cfg)
 
     if not config.output_path:
         ext = ".h5" if config.format == FormatType.HDF5 else ".nc"
