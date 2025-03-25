@@ -1,39 +1,18 @@
 #!/bin/bash
 ## USAGE
 ##
-## 1. Submit a training job:
-##    sbatch submit.slurm train OPTS="seed=42 epochs=100"
+## 1. Run a hspn module with `sbatch submit.slurm module_name [...]` which runs `python -m hspn.module_name [...]` inside the container
+##    Submit a training job: `sbatch submit.slurm train seed=42 epochs=100`
 ##
-##    This will run 'make train OPTS="seed=42 epochs=100"' inside the container.
+##    Submit a data preprocessing job `sbatch submit.slurm prepare data_dir=/srv/hspn_data/raw_data output_path=./don_dataset.h5`
 ##
-## 2. Submit a data preprocessing job:
-##    sbatch submit.slurm prepare DATA_DIR=/srv/hspn_data/raw_data OPTS="output_path=./don_dataset.h5"
-##
-##    This will run 'make prepare DATA_DIR=/srv/hspn_data/raw_data OPTS="output_path=./don_dataset.h5"'
-##    inside the container.
-##    (This is not a distributed task but is included in this script for consistency and centralization.)
-##
-## 3. Open an interactive shell inside the container:
+## 2. Open an interactive shell inside the container:
 ##    sbatch --interactive submit.slurm shell
-##
-## 4. Run a custom make target:
-##    sbatch submit.slurm custom_target ARG1=value1 ARG2=value2
-##
-##    Any make target in your Makefile can be triggered this way.
 ##
 ## ENVIRONMENT VARIABLES
 ##
 ## - CONTAINER: Path to the Singularity container
 ##   Example: CONTAINER=/path/to/custom_container.sif sbatch submit.slurm train
-##
-## - PROJECT_DIR: Root directory of your project (defaults to script location)
-##   Example: PROJECT_DIR=/home/user/my-ml-project sbatch submit.slurm train
-##
-## - DATA_DIR: Path to your data directory (defaults to /srv/hspn_data)
-##   Example: DATA_DIR=/scratch/user/dataset sbatch submit.slurm train
-##
-## - WORKDIR: Working directory inside the container (defaults to current directory)
-##   Example: WORKDIR=/path/to/working/dir sbatch submit.slurm train
 ##
 ## TIPS
 ##
@@ -59,23 +38,21 @@
 #SBATCH --gpus-per-task=1
 ##SBATCH --cpus-per-task=4
 
-#######################################################
 ## AI/ML nodes are GPU nodes with specialized hardware
 ## and software to support machine-learning tasks.
 ## To request an AI/ML node, use the directive:
 #SBATCH --constraint=mla
- 
-#################################################################
+
 ## Request GPU nodes - select one of the options below
 ##SBATCH --gres=gpu:a100:2  # Same as mla
 ##SBATCH --gres=gpu:2
 ##SBATCH --gres=gpu:4
- 
+
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
- 
+
 set -euo pipefail
-echo ----------------------------------------------------------
+echo "----------------------------------------------------------"
 echo "Type of node                    " $BC_NODE_TYPE
 echo "CPU cores per node              " $BC_CORES_PER_NODE
 echo "CPU cores per standard node     " $BC_STANDARD_NODE_CORES
@@ -85,11 +62,8 @@ echo "Hostname                        " $BC_HOST
 echo "Maximum memory per nodes        " $BC_MEM_PER_NODE
 echo "Number of tasks allocated       " $BC_MPI_TASKS_ALLOC
 echo "Number of nodes allocated       " $BC_NODE_ALLOC
-echo ----------------------------------------------------------
- 
-##############################################################
-## Output some useful job information.
-##############################################################
+echo "----------------------------------------------------------"
+
 echo "-------------------------------------------------------"
 echo "Project ID                      " $SLURM_JOB_ACCOUNT
 echo "Job submission directory        " $SLURM_SUBMIT_DIR
@@ -107,18 +81,17 @@ echo "Number of tasks                 " $SLURM_NTASKS
 echo "Node list                       " $SLURM_NODELIST
 echo "-------------------------------------------------------"
 echo
- 
-# Check for GPU
+
 module load slurm
 module load penguin/openmpi/4.1.4/gcc
 module load nvidia/openmpi/gnu/4.1
 module load cuda/cuda-12.4
-srun nvidia-smi
- 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+srun nvidia-smi # Check for GPU
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 TEMP_SCRIPT=""
 WORKDIR=$(pwd)
- 
+
 cleanup() {
   if [ -n "$TEMP_SCRIPT" ] && [ -f "$TEMP_SCRIPT" ]; then
     rm -f "$TEMP_SCRIPT"
@@ -126,61 +99,48 @@ cleanup() {
   fi
   echo "Cleanup complete"
 }
- 
+
 trap cleanup EXIT INT TERM
- 
+
 CONTAINER=${CONTAINER:-"/p/app/containers/pytorch/pytorch-22.03-py3.sif"}
 if [ ! -f "$CONTAINER" ]; then
   echo "Error: Container file not found: $CONTAINER"
   exit 1
 fi
- 
-PROJECT_DIR=${PROJECT_DIR:-$SCRIPT_DIR}
-DATA_DIR=${DATA_DIR:-/srv/hspn_data}
- 
-# VOLUMES="${WORKDIR}:/workspace,/srv/hspn_data:/srv/hspn_data:ro"
+
 VOLUMES="${WORKDIR}:/workspace"
- 
+
 if [ "$1" = "shell" ]; then
   cmd="srun --pty singularity shell --bind ${VOLUMES//,/ --bind } --nv $CONTAINER"
   echo "Executing: $cmd"
   eval $cmd
   exit $?
 fi
- 
-if [ "$1" = "train" ]; then
-  echo "Training..."
-  TEMP_SCRIPT=$(mktemp)
-  chmod +x $TEMP_SCRIPT
-  cat > $TEMP_SCRIPT << EOF
+
+pymod=$1
+shift
+jobcmd="python -m hspn.$pymod $@"
+echo "Jobcmd: \`$jobcmd\`"
+
+TEMP_SCRIPT=$(mktemp)
+chmod +x $TEMP_SCRIPT
+cat >$TEMP_SCRIPT <<EOF
 #!/bin/bash
+set -eu
 cd /workspace
 pip install -e . || { echo "Failed to install package"; exit 1; }
-#make $@ || { echo "Make command failed"; exit 1; }
-python -m hspn.train || { echo "train command failed"; exit 1; }
+$jobcmd || { echo "command failed \\\`$jobcmd\\\`"; exit 1; }
 EOF
- 
-  cmd="srun --ntasks=$SLURM_NTASKS singularity exec --bind ${VOLUMES//,/ --bind } --nv $CONTAINER $TEMP_SCRIPT"
-  echo "Executing: $cmd"
-  eval $cmd
-  exit_code=$?
- 
-  if [ $exit_code -ne 0 ]; then
-    echo "Command failed with exit code $exit_code"
-    exit $exit_code
-  fi
-else
-  echo "Running: make $@"
-  # TODO: marco
-  cmd="srun singularity exec --bind ${VOLUMES//,/ --bind } --nv $CONTAINER bash -c \"cd /workspace && pip install -e . && make $@\""
-  echo "Executing: $cmd"
-  eval $cmd
-  exit_code=$?
- 
-  if [ $exit_code -ne 0 ]; then
-    echo "Command failed with exit code $exit_code"
-    exit $exit_code
-  fi
+
+cmd="srun --ntasks=$SLURM_NTASKS singularity exec --bind ${VOLUMES//,/ --bind } --nv $CONTAINER $TEMP_SCRIPT"
+echo "Executing: $cmd"
+eval $cmd
+exit_code=$?
+
+if [ $exit_code -ne 0 ]; then
+  echo "Command failed with exit code $exit_code"
+  exit $exit_code
 fi
- 
+
 echo "Job completed ($1)"
+
