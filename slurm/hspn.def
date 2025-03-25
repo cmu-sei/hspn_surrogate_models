@@ -1,0 +1,15 @@
+# singularity build hspn.sif hspn.def
+Bootstrap: localimage
+From: ./pytorch:23.09-py3.sif
+
+%post
+    apt-get update && apt-get install -y redis-server
+
+    pip install --upgrade pip
+    pip install rq redis hydra-core hydra-rq-launcher hydra-optuna-sweeper
+    cd /workspace
+    pip install -e .
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export REDIS_PORT=6379
