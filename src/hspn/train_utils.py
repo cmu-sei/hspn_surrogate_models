@@ -8,7 +8,7 @@ from typing import Any, Dict, Literal, Optional, Tuple, Union
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-import torch.optim as optim
+from torch.optim.optimizer import Optimizer
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +84,9 @@ def setup_distributed(
 
 
 def save_checkpoint(
-    filepath: Path,
+    filepath: Union[str, Path],
     model: nn.Module,
-    optimizer: optim.Optimizer,
+    optimizer: Optimizer,
     scheduler: Optional[Any],
     epoch: int,
     metrics: Dict[str, float],
@@ -107,7 +107,7 @@ def save_checkpoint(
 
     if rank != 0:
         return
-    filepath = filepath.resolve()
+    filepath = Path(filepath).resolve()
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
@@ -125,9 +125,9 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    filename: Path,
+    filepath: Union[str, Path],
     model: Union[nn.Module, None] = None,
-    optimizer: Union[optim.Optimizer, None] = None,
+    optimizer: Union[Optimizer, None] = None,
     scheduler: Union[Any, None] = None,
     map_location: Union[str, torch.device, None] = None,
 ) -> Dict[str, Any]:
@@ -143,9 +143,9 @@ def load_checkpoint(
     Returns:
         Dictionary containing checkpoint data
     """
-    logger.info(f"Loading checkpoint from {filename!s}")
+    logger.info(f"Loading checkpoint from {filepath!s}")
 
-    checkpoint = torch.load(filename, map_location=map_location)
+    checkpoint = torch.load(filepath, map_location=map_location)
     ts = checkpoint.get("timestamp")
     metrics = checkpoint.get("metrics")
     extra = checkpoint.get("extra")
