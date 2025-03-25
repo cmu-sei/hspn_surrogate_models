@@ -1,16 +1,9 @@
-defaults:
-  - train_spec
-  - _self_
-  # - model: deep_operator
-  # - dataset: default
-  # - optimizer: adam
-  # - scheduler: cosine
-
 # Basic training parameters
 seed: 42
 n_epochs: 1
 comm_backend: nccl
 log_interval: 50 # number of batches
+checkpoint_dir: ${hydra:runtime.output_dir}
 
 # Model configuration
 model:

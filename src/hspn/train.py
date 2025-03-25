@@ -1,54 +1,56 @@
 import logging
+import pprint
+from pathlib import Path
 import time
-from typing import Any, TypeVar, Optional
+from typing import Any, Callable, Literal, Optional
 
 import hydra
+from omegaconf.omegaconf import OmegaConf
 import torch
 import torch.distributed as dist
-from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
 from dataclasses import dataclass
-from torch import nn, optim
+from torch import nn
+from torch.optim.optimizer import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
+from torch.utils.data import DataLoader
 
-from hspn.train_utils import setup_distributed
+from hspn.dataset import H5Dataset
 from hspn.train_utils import save_checkpoint, setup_distributed
 
 logger = logging.getLogger(__name__)
-
-Optimizer = TypeVar("Optimizer", bound=optim.Optimizer)
-LRScheduler = TypeVar("LRScheduler", bound=optim.lr_scheduler.LRScheduler)
 
 
 @dataclass
 class TrainConfig:
     seed: int
     n_epochs: int
-    # model: DeepOperatorNet
-    model: Any
-    dataloader: Any  # torch.utils.data.DataLoader
-    optimizer_factory: Any
-    scheduler_factory: Optional[Any]
-    # optimizer_factory: Callable[[...], Optimizer]
-    # scheduler_factory: Callable[[...], LRScheduler]
-    comm_backend: Any  # Literal["nccl", "gloo"]
+    checkpoint_dir: Path
+    model: nn.Module
+    dataloader: DataLoader
+    optimizer_factory: Callable[..., Optimizer]
+    scheduler_factory: Callable[..., LRScheduler]
+    comm_backend: Literal["nccl", "gloo"]
     log_interval: int
-    extra: Any
-    _target_: str = "hspn.train.TrainConfig"
+    extra: Optional[Any] = None
 
     def validate(self):
         """Validate after config is instantiated."""
-        if self.dataloader.batch_size and self.dataloader.batch_size != 1:
+        if (
+            isinstance(getattr(self.dataloader, "dataset"), H5Dataset)
+            and self.dataloader.batch_size
+            and self.dataloader.batch_size != 1
+        ):
             raise ValueError(
-                f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by the dataset. "
+                f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by {H5Dataset!s}"
                 "Please apply batch settings to the dataset."
             )
 
 
-ConfigStore.instance().store("train_spec", TrainConfig)
-
-
 @hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
 def main(cfg: DictConfig) -> float:
+    OmegaConf.resolve(cfg)
+    logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
     torch.manual_seed(cfg.seed)
     rank, world_size = setup_distributed()
     best_epoch_total_loss = float("inf")
@@ -59,10 +61,12 @@ def main(cfg: DictConfig) -> float:
     start_time = time.time()
     try:
         # Make sure we instantiate after setting up distributed since some components are distributed-aware
-        config: TrainConfig = hydra.utils.instantiate(cfg)
+        config: TrainConfig = TrainConfig(**hydra.utils.instantiate(cfg))
         config.validate()
         model = config.model.train()
-        logger.info(str(model))
+        logger.info(
+            f"TrainConfig:\n{pprint.pformat(config, width=120, indent=2, sort_dicts=False)}"
+        )
         if world_size > 1:
             nn.parallel.DistributedDataParallel(config.model, device_ids=[rank])
         dataloader = config.dataloader
@@ -84,9 +88,6 @@ def main(cfg: DictConfig) -> float:
             for (
                 i,
                 (branch_in, trunk_in, output),
-            ) in enumerate(
-                dataloader
-            ):  # do we have to set the dataloader sampler epoch? We just have an iterable dataset.
             ) in enumerate(dataloader):
                 model_device = model.curr_device()
                 loss = model.training_step(
