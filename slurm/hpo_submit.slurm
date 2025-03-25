@@ -1,22 +1,27 @@
 #!/bin/bash
-NUM_WORKERS=4               # total number of workers our queue can work with
-NTASKS=$((NUM_WORKERS + 2)) # workers + redis + controller
-
 #SBATCH --account=ARLAP44862YFR
 #SBATCH --job-name=hspn-hpo
 #SBATCH --partition=general
 #SBATCH --time=01:00:00
-#SBATCH --qos=hie
+#SBATCH --qos=frontier
+
 ##SBATCH --exclusive
-#SBATCH --ntasks=$NTASKS
-#SBATCH --gres=gpu:a100:$NUM_WORKERS
-#SBATCH --gpus=$NUM_WORKERS
+##SBATCH --ntasks=$NTASKS
+##SBATCH --gres=gpu:a100:$NUM_WORKERS
+##SBATCH --gpus=$NUM_WORKERS
+
+#SBATCH --ntasks=4
+##SBATCH --gres=gpu:a100:2
+##SBATCH --gpus=2
+#SBATCH --constraint=mla
+
 #SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=8G
+##SBATCH --cpus-per-task=4
+##SBATCH --mem-per-cpu=8G
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
-
+NUM_WORKERS=2               # total number of workers our queue can work with
+NTASKS=$((NUM_WORKERS + 2)) # workers + redis + controller
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 TEMP_SCRIPT=$(mktemp)                   # entrypoint script for container, cleaned up via trap

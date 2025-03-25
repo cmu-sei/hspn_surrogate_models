@@ -1,6 +1,6 @@
 # singularity build hspn.sif hspn.def
 Bootstrap: localimage
-From: ./pytorch:23.09-py3.sif
+From: slurm/pytorch_23.09-py3.sif
 
 %post
     apt-get update && apt-get install -y redis-server
