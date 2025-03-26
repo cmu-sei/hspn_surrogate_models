@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Dict, Literal, Optional, Union
+from typing import Any, Dict, Literal, Optional, Union
 
 
 class Tracker:
@@ -47,32 +47,54 @@ class Tracker:
                 self.logger.error("Could not import aim. Install aim.")
                 raise
 
+    def log_hparams(self, hparams: Dict[str, Any]) -> None:
+        if self.backend == "tensorboard":
+            flattened = self._flatten_dict(hparams)
+            self.writer.add_hparams(flattened, {})  # type: ignore
+        elif self.backend == "aim":
+            self.writer["hparams"] = hparams  # type: ignore
+
+    def _flatten_dict(
+        self, d: Dict[str, Any], parent_key: str = "", sep: str = "/"
+    ) -> Dict[str, Any]:
+        """Flatten a nested dictionary for TensorBoard hparams."""
+        items = []
+        for k, v in d.items():
+            new_key = parent_key + sep + k if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self._flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append(
+                    (new_key, v if isinstance(v, (bool, int, float, str)) else str(v))
+                )
+        return dict(items)
+
     def log_scalar(self, tag: str, value: float, step: int) -> None:
         """Log scalar values."""
         if self.backend == "tensorboard":
-            self.writer.add_scalar(tag, value, step)
+            self.writer.add_scalar(tag, value, step)  # type: ignore
         elif self.backend == "aim":
-            self.writer.track(value, name=tag, step=step)
+            self.writer.track(value, name=tag, step=step)  # type: ignore
 
     def log_scalars(
         self, main_tag: str, tag_scalar_dict: Dict[str, float], step: int
     ) -> None:
         """Log multiple scalars under the same main tag."""
         if self.backend == "tensorboard":
-            self.writer.add_scalars(main_tag, tag_scalar_dict, step)
+            self.writer.add_scalars(main_tag, tag_scalar_dict, step)  # type: ignore
         elif self.backend == "aim":
             for tag, value in tag_scalar_dict.items():
-                self.writer.track(value, name=f"{main_tag}/{tag}", step=step)
+                self.writer.track(value, name=f"{main_tag}/{tag}", step=step)  # type: ignore
 
     def log_histogram(self, tag: str, values, step: int) -> None:
         """Log histogram of values."""
         if self.backend == "tensorboard":
-            self.writer.add_histogram(tag, values, step)
+            self.writer.add_histogram(tag, values, step)  # type: ignore
         elif self.backend == "aim":
             # do our best to make a histogram
             import numpy as np
 
-            self.writer.track(
+            self.writer.track(  # type: ignore
                 np.histogram(
                     values.detach().cpu().numpy()
                     if hasattr(values, "detach")

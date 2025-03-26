@@ -107,6 +107,10 @@ def main(cfg: DictConfig) -> float:
                 )
 
         tracker = Tracker(**config.tracker_config) if rank == 0 else None
+        cfg_dict = OmegaConf.to_container(cfg)
+        assert isinstance(cfg_dict, dict)
+        if tracker:
+            tracker.log_hparams(cfg_dict)
 
         for epoch in range(epoch, config.n_epochs):
             epoch_total_loss = 0.0
@@ -158,8 +162,6 @@ def main(cfg: DictConfig) -> float:
                     best_epoch_total_loss = epoch_total_loss
                     best_epoch = epoch
                     logger.info(f"New Best Epoch: {epoch}")
-                    cfg_dict = OmegaConf.to_container(cfg)
-                    assert isinstance(cfg_dict, dict)
                     save_checkpoint(
                         config.checkpoint_dir / f"checkpoint_{epoch}.pt",
                         model.module if hasattr(model, "module") else model,
@@ -176,7 +178,7 @@ def main(cfg: DictConfig) -> float:
 
                 if rank == 0 and tracker:
                     avg_loss = epoch_total_loss / epoch_batches
-                    print("logging", epoch, global_step)
+
                     tracker.log_scalar("train/epoch", epoch, global_step)
                     tracker.log_scalar("train/loss", epoch_total_loss, global_step)
                     tracker.log_scalar("train/avg_loss", avg_loss, global_step)
