@@ -22,21 +22,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 TEMP_SCRIPT=$(mktemp)                   # entrypoint script for container, cleaned up via trap
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")" # Parent dir
 
-# REDIS_SLURM_SCRIPT="rq_server.slurm"
-# WORKER_SLURM_SCRIPT="rq_worker.slurm"
-# CONTROLLER_SLURM_SCRIPT="hpo.slurm"
-# CONTROLLER_SLURM_SCRIPT="submit.slurm train --config-name=train_sweep"
-
 VOLUMES="${VOLUMES:-$PROJECT_ROOT:/workspace}"
-CONTAINER_CMD="singularity exec --bind ${VOLUMES//,/ --bind } --nv ${CONTAINER:-"project.sif"}"
+CONTAINER_CMD="singularity exec --bind ${VOLUMES//,/ --bind } --nv ${CONTAINER:-"hspn.sif"}"
 
 RHOST_FILENAME=redis_host.txt # For sharing the assigned hostname
 
 # Launch Queue Server
 echo "Launching Redis server..."
 cmd="$CONTAINER_CMD bash -c \"echo \$(hostname) > /workspace/slurm/$RHOST_FILENAME && redis-server --bind 0.0.0.0\""
-REDIS_JOB_ID=$(srun --parsable --ntasks=1 --gpus=0 $cmd)
-echo "Redis Job ID: $REDIS_JOB_ID"
+srun --ntasks=1 --gpus=0 $cmd
 
 while [ ! -f "$SCRIPT_DIR/$RHOST_FILENAME" ]; do
   echo "Waiting for Redis hostname..."
@@ -49,11 +43,9 @@ echo "Redis is running on $REDIS_HOST"
 # Launch workers
 WORKER_CMD="$CONTAINER_CMD bash -c \"nvidia-smi && rq worker --url redis://$REDIS_HOST:6379 $QUEUE_NAME\""
 echo "Launching $NUM_WORKERS RQ workers..."
-WORKER_JOB_IDS=()
 for i in $(seq 1 $NUM_WORKERS); do
-  JOB_ID=$(srun --parsable --ntasks=1 --gpus=1 --gres=gpu:a100:1 $WORKER_CMD)
-  echo "  Worker $i Job ID: $JOB_ID"
-  WORKER_JOB_IDS+=($JOB_ID)
+  echo "  Launching Worker $i"
+  srun --ntasks=1 --gpus=1 --gres=gpu:a100:1 $WORKER_CMD
 done
 
 # Launch HPO Controller
@@ -62,17 +54,6 @@ cmd="$CONTAINER_CMD bash -c \"\
 python -m hspn.train --config-name=train_sweep \
 hydra/launcher=rq hydra.launcher.redis_host=$REDIS_HOST hydra.launcher.redis_port=6379 hydra.launcher.queue=$QUEUE_NAME
 \""
+srun --ntasks=1 --gpus=0 $cmd
 
-echo "Executing: $cmd"
-CONTROLLER_JOB_ID=$(srun --parsable --ntasks=1 --gpus=0 $cmd)
-echo "Controller Job ID: $CONTROLLER_JOB_ID"
-squeue --job "$CONTROLLER_JOB_ID"
-
-# We could wait for this to finish?
-# echo "Waiting for controller job $CONTROLLER_JOB_ID to complete..."
-# squeue --job "$CONTROLLER_JOB_ID" > /dev/null 2>&1
-# while [ $? -eq 0 ]; do
-#     sleep 30
-#     squeue --job "$CONTROLLER_JOB_ID" > /dev/null 2>&1
-# done
-# echo "Sweep complete. Controller job has exited."
+squeue --job $SLURM_JOB_ID
