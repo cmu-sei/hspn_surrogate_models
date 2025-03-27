@@ -1,8 +1,8 @@
 import logging
+
 import numpy as np
-from typing import Dict, Any
-import yaml
 import tensorflow as tf
+import yaml
 from yaml import Loader
 
 logging.basicConfig()
@@ -19,11 +19,12 @@ class configer:
     def __repr__(self):
         return f"<configer: type - {self.type}, name - {self.name}>"
 
+
 class EarlyStopping:
     def __init__(self, patience=5, min_delta=0):
         self.patience = patience
         self.min_delta = min_delta
-        self.best_loss = float('inf')
+        self.best_loss = float("inf")
         self.wait = 0
         self.stopped_epoch = 0
 
@@ -38,6 +39,7 @@ class EarlyStopping:
                 return True
         return False
 
+
 def tensor(x):
     return tf.convert_to_tensor(x, dtype=tf.float32)
 
@@ -49,7 +51,6 @@ def read_yaml(yaml_file):
     must_have_configs = {"run_parameters", "data", "hyperparameters", "model"}
     configs = dict()
     for doc in docs:
-
         dtype = doc.get("document_type")
         dname = doc.get("name")
         cfg = configer(**doc)
@@ -76,25 +77,17 @@ def get_data(config, data_type: str = "train", horovod_rank: int = 0):
             f"{config.data_dir}/{config.branch_input_files[horovod_rank]}",
             allow_pickle=True,
         )
-    trunk = np.load(
-        f"{config.data_dir}/{config.trunk_input_files[horovod_rank]}", allow_pickle=True
-    )
-    y = np.load(
-        f"{config.data_dir}/{config.don_output_files[horovod_rank]}", allow_pickle=True
-    )
+    trunk = np.load(f"{config.data_dir}/{config.trunk_input_files[horovod_rank]}", allow_pickle=True)
+    y = np.load(f"{config.data_dir}/{config.don_output_files[horovod_rank]}", allow_pickle=True)
 
     logger.info(f"Branch shape:\t{branch.shape}")
     logger.info(f"Trunk shape:\t{trunk.shape}")
     logger.info(f"Output shape:\t{y.shape}")
 
     if y.shape[0] != branch.shape[0]:
-        logger.error(
-            "First dimension of Y should be the same as first dimension of Branch"
-        )
+        logger.error("First dimension of Y should be the same as first dimension of Branch")
     if y.shape[1] != trunk.shape[0]:
-        logger.error(
-            "Second dimension of Y should be the same as first dimension of Trunk"
-        )
+        logger.error("Second dimension of Y should be the same as first dimension of Trunk")
 
     branch = tensor(branch)
     trunk = tensor(trunk)
@@ -117,7 +110,7 @@ def shuffle(idx=0, *args):
     return [tf.gather(unshuffled_x, shuffled_indices) for unshuffled_x in args]
 
 
-def batcher(branch:tf.Tensor, trunk:tf.Tensor, y:tf.Tensor, batch_branch:int=-1, batch_trunk:int=-1):
+def batcher(branch: tf.Tensor, trunk: tf.Tensor, y: tf.Tensor, batch_branch: int = -1, batch_trunk: int = -1):
     """
     Batches the input tensors 'branch', 'trunk', and 'y' based on the specified batch sizes.
 
@@ -137,8 +130,8 @@ def batcher(branch:tf.Tensor, trunk:tf.Tensor, y:tf.Tensor, batch_branch:int=-1,
     if batch_trunk == -1:
         batch_trunk = trunk.shape[0]
 
-    num_batches_branch = -(-branch.shape[0] // batch_branch) 
-    num_batches_trunk = -(-trunk.shape[0] // batch_trunk) 
+    num_batches_branch = -(-branch.shape[0] // batch_branch)
+    num_batches_trunk = -(-trunk.shape[0] // batch_trunk)
 
     i = j = 0
     while True:
@@ -150,14 +143,13 @@ def batcher(branch:tf.Tensor, trunk:tf.Tensor, y:tf.Tensor, batch_branch:int=-1,
         yield (
             branch[start_branch:end_branch],
             trunk[start_trunk:end_trunk],
-            y[start_branch:end_branch, start_trunk:end_trunk]
+            y[start_branch:end_branch, start_trunk:end_trunk],
         )
-        
-        if i==0:
-            j = (j+1)%num_batches_trunk
-        i=(i+1)%num_batches_branch
-            
-        
+
+        if i == 0:
+            j = (j + 1) % num_batches_trunk
+        i = (i + 1) % num_batches_branch
+
 
 def sample_test(X_func_ls, X_loc_ls, y_ls, batch_size):
     X_func = X_func_ls[18:21, :]

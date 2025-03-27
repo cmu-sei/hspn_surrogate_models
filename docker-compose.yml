@@ -1,0 +1,30 @@
+services:
+  dev:
+    image: hspn/surrogate-models-dev
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY}
+        http_proxy: ${http_proxy}
+        HTTPS_PROXY: ${HTTPS_PROXY}
+        https_proxy: ${https_proxy}
+        NO_PROXY: ${NO_PROXY}
+        no_proxy: ${no_proxy}
+    environment:
+      - HTTP_PROXY=${HTTP_PROXY}
+      - http_proxy=${http_proxy}
+      - HTTPS_PROXY=${HTTPS_PROXY}
+      - https_proxy=${https_proxy}
+      - NO_PROXY=${NO_PROXY}
+      - no_proxy=${no_proxy}
+      - HF_HOME=/root/.cache/huggingface
+      - TF_HOME=/root/.cache/tensorflow
+      - TERM=xterm-256color
+    ipc: host
+    network_mode: host
+    runtime: nvidia
+    volumes:
+      - .:/workspace:rw
+      - /srv/cache/tensorflow:/root/.cache/tensorflow:rw
+      - /srv/hspn_data/:/srv/hspn_data/:ro
