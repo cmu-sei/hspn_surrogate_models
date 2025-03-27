@@ -4,7 +4,7 @@ import os
 import sys
 import time
 
-import src.hspn2.train
+import utils
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
@@ -131,7 +131,7 @@ def main(rp, hp, md, dt):
     don_model = DeepONet_Model(md, opt, train_bin.shape[1], train_tin.shape[1])
     logger.info("DeepONet model created")
 
-    early_stopping = src.hspn2.train.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
+    early_stopping = utils.EarlyStopping(patience=hp.patience, min_delta=hp.min_delta)
     begin_time = time.time()
     stop_training = False
     accumulated_gradients = []
