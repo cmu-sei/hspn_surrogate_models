@@ -106,7 +106,7 @@ def main(cfg: DictConfig) -> float:
                     f"Loaded checkpoint has epoch={ckpt['epoch']} >= {config.n_epochs=}"
                 )
 
-        tracker = Tracker(**config.tracker_config) if rank == 0 else None
+        tracker = Tracker(**config.tracker_config) if rank == 0 and tracker else None
         cfg_dict = OmegaConf.to_container(cfg)
         assert isinstance(cfg_dict, dict)
         if tracker:
