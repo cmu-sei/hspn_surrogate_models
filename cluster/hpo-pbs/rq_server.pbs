@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N rq-server
+#PBS -l select=1:ncpus=1:mem=4gb
+##PBS -l select=1:ncpus=2:mem=8gb
+##PBS -W depend=after:1234 # should be after worker, before controller
+
+set -e
+project_root="$PBS_O_WORKDIR"
+cd $project_root
+VOLUMES="${VOLUMES:-$project_root:/workspace}"
+module add singularity
+
+echo "$(hostname)" | tee redis_host.txt
+trap 'rm -f redis_host.txt' EXIT
+singularity exec --bind ${VOLUMES//,/ --bind } ${CONTAINER:-"hspn.sif"} redis-server --bind 0.0.0.0

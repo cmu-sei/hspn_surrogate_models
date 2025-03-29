@@ -1,0 +1,26 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N rq-worker
+#PBS -r y
+#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
+
+echo "PBS_ARRAY_INDEX=$PBS_ARRAY_INDEX"
+set -e
+project_root="$PBS_O_WORKDIR"
+cd $project_root
+VOLUMES="${VOLUMES:-$project_root:/workspace}"
+module add singularity
+
+nvidia-smi # make sure we have gpu
+
+echo "Waiting for redis_host.txt"
+while [ ! -f redis_host.txt ]; do
+  echo -n "."
+  sleep 5
+done
+redis_host=$(cat redis_host.txt)
+echo "Redis host: $redis_host"
+
+queue_name=hspn_hpo_queue
+start_cmd="rq worker --url redis://$redis_host:6379 $queue_name"
+singularity exec --nv --bind ${VOLUMES//,/ --bind } ${CONTAINER:-"hspn.sif"} bash -c "$start_cmd"
