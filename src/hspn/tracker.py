@@ -91,20 +91,12 @@ class Tracker:
         if self.backend == "tensorboard":
             self.writer.add_histogram(tag, values, step)  # type: ignore
         elif self.backend == "aim":
-            # do our best to make a histogram
-            import numpy as np
-
             self.writer.track(  # type: ignore
-                np.histogram(
-                    values.detach().cpu().numpy()
-                    if hasattr(values, "detach")
-                    else values
-                ),
+                values.detach().cpu().numpy() if hasattr(values, "detach") else values,
                 name=f"{tag}_hist",
                 step=step,
             )
 
     def close(self) -> None:
         """Close the logger."""
-        if self.backend == "tensorboard":
-            self.writer.close()
+        self.writer.close()
