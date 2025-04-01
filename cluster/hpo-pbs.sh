@@ -97,5 +97,5 @@ controller_job_id=$(submit "Controller" $pbs_opts $after_server -v "N_WORKERS=$N
 
 # Cleanup - shutdown workers and server after controller exits
 after_controller="-W depend=afterok:$controller_job_id"
-shutdown_ids="${worker_job_id},${server_job_id}"
+shutdown_ids="'${worker_job_id},${server_job_id}'"
 cleanup_job_id=$(submit "Cleanup" $pbs_opts -W depend=afterok:$controller_job_id -v "SHUTDOWN_JOB_IDS=$shutdown_ids" "$cleanup_pbs")
