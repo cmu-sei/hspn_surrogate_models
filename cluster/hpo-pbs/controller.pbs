@@ -21,9 +21,10 @@ echo "Redis host: $redis_host"
 queue_name=hspn_hpo_queue
 
 # Basic sweep args
+# python -m hspn.train --config-name=train_hpo_optuna
 start_cmd=$(
   cat <<EOF
-python -m hspn.train --config-name=train_sweep
+python -m hspn.train --config-name=train_hpo_basic
 hydra/launcher=rq
 hydra.launcher.redis.host=$redis_host
 hydra.launcher.redis.port=6379
@@ -32,8 +33,8 @@ EOF
 )
 
 # Optuna sweeper needs n_trials and n_jobs
-start_cmd+=" hydra.sweeper.n_trials=$N_TRIALS"
-start_cmd+=" hydra.sweeper.n_jobs=$N_WORKERS"
+# start_cmd+=" hydra.sweeper.n_trials=$N_TRIALS"
+# start_cmd+=" hydra.sweeper.n_jobs=$N_WORKERS"
 
 # User args
 if [ -n "$OPTS" ]; then

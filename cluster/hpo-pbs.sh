@@ -12,7 +12,8 @@ pbs_opts="-A $ACCT -q $QUEUE -l walltime=$WALLTIME"
 
 worker_pbs="cluster/hpo-pbs/rq_worker.pbs"
 server_pbs="cluster/hpo-pbs/rq_server.pbs"
-controller_pbs="cluster/hpo-pbs/hpo_controller.pbs"
+controller_pbs="cluster/hpo-pbs/controller.pbs"
+cleanup_pbs="cluster/hpo-pbs/cleanup.pbs"
 
 assert_exists() {
   if [[ ! -f "$1" ]]; then
@@ -24,6 +25,7 @@ assert_exists() {
 assert_exists "$worker_pbs"
 assert_exists "$server_pbs"
 assert_exists "$controller_pbs"
+assert_exists "$cleanup_pbs"
 
 echo "PBS opts: $pbs_opts"
 echo "Train opts: $TRAIN_OPTS"
@@ -72,13 +74,13 @@ submit() {
   shift
   local cmd="qsub "$@""
   local job_id
-  echo "$prefix $qsub"
+  echo "$prefix $cmd" >&2
   if ! job_id=$($cmd 2>&1); then
     echo "$prefix ERROR Failed to submit $name job. qsub output:" >&2
     echo "$job_id" >&2
     exit 1
   fi
-  echo "$prefix $job_id"
+  echo "$prefix $job_id" >&2
   echo "$job_id"
 }
 
@@ -92,3 +94,8 @@ server_job_id=$(submit "Server" $pbs_opts $after_workers "$server_pbs")
 # Start controller after server (starts last)
 after_server="-W depend=after:$server_job_id"
 controller_job_id=$(submit "Controller" $pbs_opts $after_server -v "N_WORKERS=$N_WORKERS,N_TRIALS=$N_TRIALS,OPTS=$TRAIN_OPTS" "$controller_pbs")
+
+# Cleanup - shutdown workers and server after controller exits
+after_controller="-W depend=afterok:$controller_job_id"
+shutdown_ids="${worker_job_id},${server_job_id}"
+cleanup_job_id=$(submit "Cleanup" $pbs_opts -W depend=afterok:$controller_job_id -v "SHUTDOWN_JOB_IDS=$shutdown_ids" "$cleanup_pbs")
