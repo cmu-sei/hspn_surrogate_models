@@ -1,0 +1,23 @@
+# In project root:
+# 1. Pull torch image if you dont have it: singularity pull docker://nvcr.io/nvidia/pytorch:25.03-py3
+# 2. Build: module load singularity && singularity build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
+Bootstrap: localimage
+From: ./pytorch_23.09-py3.sif
+# From: ./pytorch_25.03-py3.sif
+# Bootstrap: docker
+# From: nvcr.io/nvidia/pytorch:25.03-py3
+
+%post
+    apt-get update && apt-get install -y redis-server curl && rm -rf /var/lib/apt/lists/*
+    cd /workspace
+    # do this manually so we can exclude torch
+    pip install --no-deps -e .
+    pip install hydra-core hydra-optuna-sweeper hydra-rq-launcher tqdm h5py netcdf4 aim cloudpickle
+    pip install --upgrade "cloudpickle>=3.0.0"
+
+    # TODO: new torch comes with constraints, try this:
+    # pip install -e . -c /etc/pip/constraint.txt
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export REDIS_PORT=6379
