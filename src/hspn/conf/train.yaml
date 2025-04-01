@@ -1,6 +1,6 @@
 # Basic training parameters
 seed: 42
-n_epochs: 1
+n_epochs: 2
 comm_backend: nccl
 log_interval: 50 # number of batches
 checkpoint_dir: ${hydra:runtime.output_dir}
@@ -64,7 +64,7 @@ extra:
   aim_config:
     log_dir: .
     backend: aim
-    experiment_name: ${now:%Y-%m-%d_%H-%M-%S}_${hydra:job.name}
+    experiment_name: ${hydra:job.name}
 
 hydra:
-  output_subdir: hydra
+  output_subdir: config
