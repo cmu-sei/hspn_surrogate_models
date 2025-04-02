@@ -19,3 +19,6 @@ prepare:
 # OPTS: For additional options the user may want to add to the end of the command (e.g. OPTS="seed=55, extra.data_dir=./data --cfg=job")
 train:
 	hspn-train $(OPTS)
+
+hspn.sif:
+	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def

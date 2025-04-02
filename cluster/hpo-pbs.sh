@@ -1,13 +1,17 @@
 #!/bin/bash
 # Launches hyperparameter optimization on PBS cluster
+
+# Usage:
+#   $ N_WORKERS=4 N_TRIALS=1024 WALLTIME="03:00:00" TRAIN_OPTS="--config-name=train_hpo_optuna epochs=32" cluster/hpo-pbs.sh
+
 set -eu
 
 ACCT="${ACCT:-ODEFN50352CMU}"
 QUEUE="${QUEUE:-mla}"
 WALLTIME="${WALLTIME:-00:20:00}"
-N_WORKERS=${1:-2}
-N_TRIALS=${2:-2}
-TRAIN_OPTS="${TRAIN_OPTS:-}"
+N_WORKERS=${N_WORKERS:-2}
+N_TRIALS=${N_TRIALS:-2}
+TRAIN_OPTS="${TRAIN_OPTS:---config-name=train_hpo_basic}"
 pbs_opts="-A $ACCT -q $QUEUE -l walltime=$WALLTIME"
 
 worker_pbs="cluster/hpo-pbs/rq_worker.pbs"

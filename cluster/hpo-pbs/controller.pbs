@@ -20,11 +20,10 @@ echo "Redis host: $redis_host"
 
 queue_name=hspn_hpo_queue
 
-# Basic sweep args
-# python -m hspn.train --config-name=train_hpo_optuna
+# Jobs and trials are passed by env vars, which are passed through from the launching script.
 start_cmd=$(
   cat <<EOF
-python -m hspn.train --config-name=train_hpo_basic
+python -m hspn.train
 hydra/launcher=rq
 hydra.launcher.redis.host=$redis_host
 hydra.launcher.redis.port=6379
@@ -32,15 +31,13 @@ hydra.launcher.queue=$queue_name
 EOF
 )
 
-# Optuna sweeper needs n_trials and n_jobs
-# start_cmd+=" hydra.sweeper.n_trials=$N_TRIALS"
-# start_cmd+=" hydra.sweeper.n_jobs=$N_WORKERS"
-
 # User args
+# E.g. OPTS="--config-name=train_hpo_optuna model.something=another_thing hydra.verbose=true"
 if [ -n "$OPTS" ]; then
   start_cmd+=" $OPTS"
 fi
 
 start_cmd=$(echo "$start_cmd" | tr '\n' ' ')
 
+echo "Launching controller container with start cmd: $start_cmd"
 singularity exec --bind ${VOLUMES//,/ --bind } ${CONTAINER:-"hspn.sif"} bash -c "$start_cmd"
