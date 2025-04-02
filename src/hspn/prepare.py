@@ -273,7 +273,7 @@ def create_hdf5_file(
         f.attrs["branch_dim"] = branch_dim
         f.attrs["trunk_size"] = n_trunk
         f.attrs["trunk_dim"] = trunk_dim
-        f.attrs["creation_time"] = np.string_(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        f.attrs["creation_time"] = str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     logger.info("HDF5 file created.")
 
