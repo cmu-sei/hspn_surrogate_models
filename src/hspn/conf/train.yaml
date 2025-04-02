@@ -1,3 +1,9 @@
+defaults:
+  - override hydra/hydra_logging: custom
+
+hydra:
+  output_subdir: config
+
 # Basic training parameters
 seed: 42
 n_epochs: 2
@@ -40,7 +46,7 @@ dataloader:
 
 # Optimizer configuration
 optimizer_factory:
-  _target_: torch.optim.SGD
+  _target_: torch.optim.Adam
   _partial_: true
   lr: 0.0005
   # lr: ${optimizer.lr}
@@ -66,5 +72,3 @@ extra:
     backend: aim
     experiment_name: ${hydra:job.name}
 
-hydra:
-  output_subdir: config
