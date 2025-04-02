@@ -3,29 +3,36 @@ name = "hspn"
 version = "0.1.0"
 description = "deep operator networks for ARL CFD"
 readme = "README.md"
+requires-python = ">=3.10"
 authors = [
   { name="Jasmine Ratchford", email="jratchford@sei.cmu.edu" },
   { name = "Marco Christiani", email = "mchristiani@sei.cmu.edu" },
 ]
-#requires-python = ">=3.10"
+
 dependencies = [
-    # TODO: can we change the docker image? what does cluster have?
-    "h5py", #>=3.13.0",
+    "cloudpickle>=3.1.1",
+    "h5py>=3.13.0",
     "hydra-core>=1.3.2",
-    "hydra-optuna-sweeper>=1.2.0",
     "netcdf4>=1.7.2",
-    "torch==2.4.1",
+    "torch>=2.6.0",
     "tqdm>=4.67.1",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "rq-dashboard>=0.8.2.2",
     "ruff>=0.9.7",
 ]
+aim = [
+    "aim>=3.28.0",
+]
+hpo = [
+    "hydra-optuna-sweeper>=1.2.0",
+    "hydra-rq-launcher>=1.2.0",
+    "rq>=2.2.0",
+]
 
-# TODO: talk to @jratchford about the package structure, can cause import issues, should reorganize
-#   Also, for ease of distribution may want to include the configs in the package.
- [project.scripts]
+[project.scripts]
 hspn-preprocess = "hspn.prepare:main"
 hspn-train = "hspn.train:main"
 
