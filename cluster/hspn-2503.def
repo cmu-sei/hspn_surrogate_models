@@ -1,0 +1,11 @@
+# [WIP] Depends on pytorch-2503 build
+Bootstrap: localimage
+From: ./pytorch-2503.sif
+
+%post
+    apt-get update && apt-get install -y redis-server && rm -rf /var/lib/apt/lists/*
+    cd /workspace && pip install -e . -c /etc/pip/constraint.txt
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export REDIS_PORT=6379

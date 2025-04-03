@@ -38,7 +38,7 @@ $(OPENSSL_TARBALL):
 
 # Build the base image
 pytorch-2503.sif: $(OPENSSL_DIR)
-	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503.sif pytorch-2503.def
+	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503.sif cluster/pytorch-2503.def
 
 # Build
 hspn-2503.sif: pytorch-2503.sif
@@ -47,7 +47,7 @@ hspn-2503.sif: pytorch-2503.sif
 # Staged Variant - WIP
 # Build the base image - staged
 pytorch-2503-staged.sif: $(OPENSSL_DIR)
-	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503-staged.sif pytorch-2503-staged.def
+	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503-staged.sif cluster/pytorch-2503-staged.def
 
 # Staged build
 hspn-2503-staged.sif: pytorch-2503-staged.sif

@@ -1,0 +1,28 @@
+# WIP - more robust dependency locking
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.03-py3
+
+%post
+    apt-get update && apt-get install -y redis-server curl && rm -rf /var/lib/apt/lists/*
+    cd /workspace
+
+    # Tmp directories for uv to get around permission issues
+    mkdir -p /workspace/uv-tmp /workspace/uv-cache
+
+    # Install uv
+    # curl -L https://github.com/astral-sh/uv/releases/download/0.6.11/uv-x86_64-unknown-linux-gnu.tar.gz -o uv.tar.gz
+    wget https://github.com/astral-sh/uv/releases/download/0.6.11/uv-x86_64-unknown-linux-gnu.tar.gz -O uv.tar.gz
+    tar --no-same-owner -xzf uv.tar.gz
+    mv uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/
+    rm -rf uv.tar.gz uv-x86_64-unknown-linux-gnu
+
+    # Install dependencies with uv (tmp dirs set inline so we dont potentially pollute)
+    # TMPDIR=/workspace/uv-tmp TMP=/workspace/uv-tmp TEMP=/workspace/uv-tmp UV_CACHE_DIR=/workspace/uv-cache \
+    # TODO: correct locking
+    uv pip install hydra-core hydra-optuna-sweeper hydra-rq-launcher tqdm h5py netcdf4
+    # TMPDIR=/workspace/uv-tmp TMP=/workspace/uv-tmp TEMP=/workspace/uv-tmp UV_CACHE_DIR=/workspace/uv-cache uv lock
+    rm -rf /workspace/uv-tmp /workspace/uv-cache
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export REDIS_PORT=6379
