@@ -1,0 +1,30 @@
+# src/hspn/conf/train_hpo_optuna.yaml
+# A hyperparameter optimization sweep using the optuna sweeper with the grid sampler.
+# Inherits from train.yaml, we just specify what we want to sweep over (and override the run mode for convenience)
+# Uses the default launcher that simply launches trials sequentially. Of course can override at CLI, e.g. "hydra/launcher=joblib"
+#
+# Usage: python -m hspn.train --config-name=train_hpo_optuna
+#
+# Documentation:
+#  - Sweeper configuration options: https://hydra.cc/docs/plugins/optuna_sweeper/
+#  - Optuna samplers:https://optuna.readthedocs.io/en/stable/reference/samplers/index.html 
+
+defaults:
+  - train
+  - _self_
+  - override hydra/sweeper: optuna
+  - override hydra/sweeper/sampler: grid
+
+hydra:
+  mode: MULTIRUN # equivalent to -m or --multirun on the command line. (Without specifying this at some point the sweep is not performed)
+  sweeper:
+   direction: minimize
+   study_name: hspn
+   storage: null
+   n_trials: ${oc.env:N_TRIALS} # max number of trials, the sweeper may find it needs fewer trials
+   n_jobs: ${oc.env:N_WORKERS}
+   params:
+     optimizer_factory.lr: choice(1e-5, 3e-5, 1e-4, 3e-4)
+     model.trunk_config.width: choice(50, 100)
+     model.trunk_config.depth: choice(4, 5, 6)
+     model.latent_dim: choice(10, 25)

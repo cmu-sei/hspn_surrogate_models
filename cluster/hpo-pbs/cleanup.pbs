@@ -1,0 +1,9 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N hpo-cleanup
+#PBS -l select=1:ncpus=1:mem=1gb
+
+IFS="," read -ra ids <<<"$SHUTDOWN_JOB_IDS"
+for curr_job_id in "${ids[@]}"; do
+  qdel "$curr_job_id"
+done

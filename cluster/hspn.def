@@ -1,0 +1,27 @@
+# In project root:
+# module load singularity && singularity build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.03-py3
+
+%post
+    # Install deps manually so we can exclude torch
+    apt-get update && \
+      apt-get install -y redis-server curl && \
+      rm -rf /var/lib/apt/lists/*
+    cd /workspace && \
+      pip install --no-deps -e . && \
+      # known working versions for this specific 2403 image
+      pip install \
+        hydra-core==1.3.2 \
+        hydra-optuna-sweeper==1.2.0 \
+        hydra-rq-launcher==1.2.0 \
+        tqdm==4.66.2 \
+        aim==3.28.0 \
+        cloudpickle==3.0.0 \
+        h5py==3.13.0 \
+        netcdf4==1.7.2
+
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export REDIS_PORT=6379

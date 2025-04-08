@@ -1,0 +1,43 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N hpo-controller
+#PBS -l select=1:ncpus=1:mem=1gb
+##PBS -W depend=after:.. # should depend on server, which should depend on workers
+
+set -e
+project_root="$PBS_O_WORKDIR"
+cd $project_root
+VOLUMES="${VOLUMES:-$project_root:/workspace}"
+module add singularity
+
+echo "Waiting for redis_host.txt"
+while [ ! -f redis_host.txt ]; do
+  echo -n "."
+  sleep 5
+done
+redis_host=$(cat redis_host.txt)
+echo "Redis host: $redis_host"
+
+queue_name=hspn_hpo_queue
+
+# Jobs and trials are passed by env vars, which are passed through from the launching script.
+start_cmd=$(
+  cat <<EOF
+python -m hspn.train
+hydra/launcher=rq
+hydra.launcher.redis.host=$redis_host
+hydra.launcher.redis.port=6379
+hydra.launcher.queue=$queue_name
+EOF
+)
+
+# User args
+# E.g. OPTS="--config-name=train_hpo_optuna model.something=another_thing hydra.verbose=true"
+if [ -n "$OPTS" ]; then
+  start_cmd+=" $OPTS"
+fi
+
+start_cmd=$(echo "$start_cmd" | tr '\n' ' ')
+
+echo "Launching controller container with start cmd: $start_cmd"
+singularity exec --bind ${VOLUMES//,/ --bind } ${CONTAINER:-"hspn.sif"} bash -c "$start_cmd"

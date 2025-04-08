@@ -1,4 +1,4 @@
-.PHONY: default
+.PHONY: default prepare train
 
 default:
 	docker compose run --build -it --rm -v $(shell pwd):/workspace --user $(shell id -u):$(shell id -g) -e USER=$(USER) dev
@@ -19,3 +19,37 @@ prepare:
 # OPTS: For additional options the user may want to add to the end of the command (e.g. OPTS="seed=55, extra.data_dir=./data --cfg=job")
 train:
 	hspn-train $(OPTS)
+
+hspn.sif:
+	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+
+
+OPENSSL_VERSION := 3.4.1
+OPENSSL_TARBALL := openssl-$(OPENSSL_VERSION).tar.gz
+OPENSSL_DIR := openssl-$(OPENSSL_VERSION)
+
+# Get OpenSSL since we need to compile it during container build
+$(OPENSSL_DIR): $(OPENSSL_TARBALL)
+	tar -xf $(OPENSSL_TARBALL)
+
+$(OPENSSL_TARBALL):
+	@echo "Downloading OpenSSL $(OPENSSL_VERSION)"
+	wget https://github.com/openssl/openssl/releases/download/openssl-$(OPENSSL_VERSION)/$(OPENSSL_TARBALL) -O $(OPENSSL_TARBALL)
+
+# Build the base image
+pytorch-2503.sif: $(OPENSSL_DIR)
+	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503.sif cluster/pytorch-2503.def
+
+# Build
+hspn-2503.sif: pytorch-2503.sif
+	singularity build --fakeroot --bind $(shell pwd):/workspace hspn-2503.sif cluster/hspn-2503.def
+
+# Staged Variant - WIP
+# Build the base image - staged
+pytorch-2503-staged.sif: $(OPENSSL_DIR)
+	singularity build --fakeroot --bind $(shell realpath $(OPENSSL_DIR)):/tmp/$(OPENSSL_DIR) pytorch-2503-staged.sif cluster/pytorch-2503-staged.def
+
+# Staged build
+hspn-2503-staged.sif: pytorch-2503-staged.sif
+	singularity build --fakeroot --bind $(shell pwd):/workspace hspn-2503-staged.sif cluster/hspn-2503.def
+

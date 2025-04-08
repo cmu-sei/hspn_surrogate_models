@@ -33,7 +33,7 @@ class TrainConfig:
     scheduler_factory: Callable[..., LRScheduler]
     comm_backend: Literal["nccl", "gloo"]
     log_interval: int
-    tracker_config: Dict[str, Any]
+    tracker_config: Optional[Dict[str, Any]]
     extra: Optional[Any] = None
 
     def __post_init__(self):
@@ -106,10 +106,11 @@ def main(cfg: DictConfig) -> float:
                     f"Loaded checkpoint has epoch={ckpt['epoch']} >= {config.n_epochs=}"
                 )
 
-        tracker = Tracker(**config.tracker_config) if rank == 0 and tracker else None
         cfg_dict = OmegaConf.to_container(cfg)
         assert isinstance(cfg_dict, dict)
-        if tracker:
+
+        if rank == 0 and config.tracker_config:
+            tracker = Tracker(**config.tracker_config)
             tracker.log_hparams(cfg_dict)
 
         for epoch in range(epoch, config.n_epochs):
