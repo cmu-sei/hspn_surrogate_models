@@ -1,17 +1,23 @@
 #!/bin/bash
 # Launches hyperparameter optimization on PBS cluster
-
+#
+# Options:
+#   Options are read from environment variables. Makes sense to set the account your want to charge to once (e.g. `export ACCT=ABC123`).
+#
+#   ACCT (str): account to charge to (i.e. `-A $ACCT`).
+#   WALLTIME (str): time requesting (i.e. `-l walltime=$WALLTIME`).
+#   N_WORKERS (int): number of workers in the pool (spawned together and reused).
+#   N_TRIALS (int): number of trials, can have different meanings depending on the HPO strategy chosen, see config files for details.
+#   TRAIN_OPTS (str): passed through to controller.pbs which passes it through to the python entrypoint. See controller.pbs for details.
+#
 # Usage:
 #   $ N_WORKERS=4 N_TRIALS=1024 WALLTIME="03:00:00" TRAIN_OPTS="--config-name=train_hpo_optuna epochs=32" cluster/hpo-pbs.sh
 
 set -eu
 
-ACCT="${ACCT:-ODEFN50352CMU}"
-QUEUE="${QUEUE:-mla}"
-WALLTIME="${WALLTIME:-00:20:00}"
-N_WORKERS=${N_WORKERS:-2}
-N_TRIALS=${N_TRIALS:-2}
-TRAIN_OPTS="${TRAIN_OPTS:---config-name=train_hpo_basic}"
+: ${ACCT:=ODEFN50352CMU} ${QUEUE:=mla} ${WALLTIME:=00:20:00} \
+  ${N_WORKERS:=2} ${N_TRIALS:=2} \
+  ${TRAIN_OPTS:=--config-name=train_hpo_basic}
 pbs_opts="-A $ACCT -q $QUEUE -l walltime=$WALLTIME"
 
 worker_pbs="cluster/hpo-pbs/rq_worker.pbs"
