@@ -35,11 +35,10 @@ dataloader:
   dataset:
     _target_: hspn.dataset.H5Dataset
     file_path: ${extra.data_dir}/don_dataset.h5
-    # TODO: support uneven batch sizes? ask jasmine
     branch_batch_size: 100000
     trunk_batch_size: 100000
-  batch_size: null  # Do not change this
-  shuffle: false # Do not change this
+  batch_size: null  # Do not change this when using the H5Dataset class which already yields batches
+  shuffle: false # Do not change this when using the H5Dataset class which already yields batches
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
@@ -49,15 +48,9 @@ optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
   lr: 0.0005
-  # lr: ${optimizer.lr}
-  # weight_decay: ${optimizer.weight_decay}
 
 # Scheduler configuration
 scheduler_factory: null
-#   _target_: torch.optim.lr_scheduler.${scheduler.name}
-#   _partial_: true
-#   T_max: ${n_epochs}
-#   eta_min: ${scheduler.eta_min}
 
 tracker_config: ${extra.aim_config}
 

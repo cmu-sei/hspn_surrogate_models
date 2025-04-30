@@ -140,7 +140,6 @@ def main(cfg: DictConfig) -> float:
 
                     optimizer.zero_grad()
                     loss.backward()
-                    # TODO: Might want to consider grad clip control later, leaving note to remember.
                     optimizer.step()
                     if scheduler:
                         scheduler.step()

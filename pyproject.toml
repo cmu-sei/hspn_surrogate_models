@@ -5,8 +5,6 @@ description = "deep operator networks for ARL CFD"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 authors = [
-  { name="Jasmine Ratchford", email="jratchford@sei.cmu.edu" },
-  { name = "Marco Christiani", email = "mchristiani@sei.cmu.edu" },
 ]
 
 dependencies = [
