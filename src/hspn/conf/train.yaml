@@ -1,3 +1,19 @@
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+#
+
 defaults:
   - override hydra/hydra_logging: custom
 
@@ -35,11 +51,10 @@ dataloader:
   dataset:
     _target_: hspn.dataset.H5Dataset
     file_path: ${extra.data_dir}/don_dataset.h5
-    # TODO: support uneven batch sizes? ask jasmine
     branch_batch_size: 100000
     trunk_batch_size: 100000
-  batch_size: null  # Do not change this
-  shuffle: false # Do not change this
+  batch_size: null  # Do not change this when using the H5Dataset class which already yields batches
+  shuffle: false # Do not change this when using the H5Dataset class which already yields batches
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
@@ -49,15 +64,9 @@ optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
   lr: 0.0005
-  # lr: ${optimizer.lr}
-  # weight_decay: ${optimizer.weight_decay}
 
 # Scheduler configuration
 scheduler_factory: null
-#   _target_: torch.optim.lr_scheduler.${scheduler.name}
-#   _partial_: true
-#   T_max: ${n_epochs}
-#   eta_min: ${scheduler.eta_min}
 
 tracker_config: ${extra.aim_config}
 
