@@ -1,0 +1,7 @@
+defaults:
+  - override hydra/hydra_logging: custom
+  - override hydra/job_logging: custom
+
+hydra:
+  output_subdir: config
+

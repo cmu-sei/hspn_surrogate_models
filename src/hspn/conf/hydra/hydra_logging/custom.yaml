@@ -1,13 +1,11 @@
+defaults:
+  - default
 version: 1
 formatters:
   simple:
     format: "[%(asctime)s][HYDRA] %(message)s"
 disable_existing_loggers: false
 handlers:
-  console:
-    class: logging.StreamHandler
-    formatter: simple
-    stream: ext://sys.stdout
   file:
     class: logging.FileHandler
     mode: w
@@ -15,6 +13,10 @@ handlers:
     # relative to the job log directory
     filename: hydra-${hydra.job.name}.log
     delay: true
+  rich:
+    class: rich.logging.RichHandler
+    formatter: simple
+    rich_tracebacks: true
 root:
   level: INFO
-  handlers: [ console, file ]
+  handlers: [ rich, file ]

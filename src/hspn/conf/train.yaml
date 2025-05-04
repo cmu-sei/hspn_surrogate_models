@@ -1,5 +1,5 @@
 defaults:
-  - override hydra/hydra_logging: custom
+  - base
 
 # Basic training options -------------------------------------------------------
 seed: 42
