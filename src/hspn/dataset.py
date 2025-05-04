@@ -45,36 +45,38 @@ class H5Dataset(IterableDataset):
             if trunk_batch_size and trunk_batch_size > 0
             else self.trunk.shape[0]
         )
+        assert isinstance(self.branch_batch_size, int)
+        assert isinstance(self.trunk_batch_size, int)
 
         logger.info(
             f"Loaded Branch={self.branch.shape} Trunk={trunk.shape} Output={output.shape}"
         )
 
         if start <= 1:
-            trunk_start = int(start * trunk.shape[0])
+            global_trunk_start = int(start * trunk.shape[0])
         else:
-            trunk_start = start
+            global_trunk_start = start
+            assert isinstance(start, int)
         if end <= 1:
-            trunk_end = int(end * trunk.shape[0])
+            global_trunk_end = int(end * trunk.shape[0])
         else:
-            trunk_end = end
+            assert isinstance(end, int)
+            global_trunk_end = end
 
-        trunk_n = trunk_end - trunk_start
+        trunk_n = global_trunk_end - global_trunk_start
         logger.info(
-            f"Calculated dataset subset: {start=} {end=} {trunk_start=} {trunk_end=} {trunk_n=}"
+            f"Calculated dataset subset: {start=} {end=} {global_trunk_start=} {global_trunk_end=} {trunk_n=}"
         )
         assert trunk_n > 0, (
-            f"Trunk start and end indices must be valid ({trunk_start}, {trunk_end})"
+            f"Trunk start and end indices must be valid ({global_trunk_start}, {global_trunk_end})"
         )
 
         # Each worker gets a slice of the trunk data
         chunk_size = trunk_n // self.world_size
-        trunk_start = self.rank * chunk_size
+        trunk_start = global_trunk_start + self.rank * chunk_size
 
-        trunk_end = (
-            (self.rank + 1) * chunk_size
-            if self.rank < self.world_size - 1
-            else trunk.shape[0]
+        trunk_end = trunk_start + (
+            (self.rank + 1) * chunk_size if self.rank < self.world_size - 1 else trunk_n
         )
 
         logger.info(
@@ -85,7 +87,7 @@ class H5Dataset(IterableDataset):
             1
         ]  # trunk chunk size * n trunk features
         logger.info(
-            f"Preloading trunk data for worker {self.rank}/{self.world_size}: {trunk_chunk_size:,} elements in {dtype} "
+            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:,} elements in {dtype} "
             f"{trunk_chunk_size * dtype.itemsize / 1e9:.2f}gb"
         )
         self.trunk = self.file["trunk"][trunk_start:trunk_end]
@@ -94,7 +96,7 @@ class H5Dataset(IterableDataset):
             trunk_end - trunk_start
         )  # branch size * trunk chunk size
         logger.info(
-            f"Preloading output data for worker {self.rank}/{self.world_size}: {output_chunk_size:,} elements in {dtype} "
+            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:,} elements in {dtype} "
             f"{output_chunk_size * dtype.itemsize / 1e9:.2f}gb"
         )
         self.output = self.file["output"][
@@ -138,7 +140,7 @@ class H5Dataset(IterableDataset):
             n_branch + self.branch_batch_size - 1
         ) // self.branch_batch_size
 
-        return trunk_batches * branch_batches
+        return int(trunk_batches * branch_batches)
 
     def close(self) -> None:
         """Close the data file."""

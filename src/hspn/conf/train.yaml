@@ -1,5 +1,6 @@
 defaults:
   - base
+  - _self_
 
 # Basic training options -------------------------------------------------------
 seed: 42
@@ -33,7 +34,7 @@ dataloader: &train_loader
     _target_: hspn.dataset.H5Dataset
     file_path: ${extra.data_dir}/don_dataset.h5
     branch_batch_size: null
-    trunk_batch_size: 1e6
+    trunk_batch_size: 100_000
     start: 0.0
     end: 0.8
   batch_size: null  # Do not change this when using `hspn.dataset.H5Dataloader` which already yields batches
