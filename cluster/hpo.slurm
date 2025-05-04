@@ -11,20 +11,28 @@
 #SBATCH --qos=frontier
 #SBATCH --output=ray-hydra-%j.out
 
-if ! command -v apptainer &> /dev/null; then
-    module load apptainer
+if ! command -v apptainer > /dev/null 2>&1; then
+  if module load apptainer > /dev/null 2>&1; then
+    :
+  else
+    echo "Could not load apptainer module. Attempting to load singularity..."
+    if module load singularity > /dev/null 2>&1; then
+      alias apptainer=singularity
+      echo "Loaded singularity"
+    else
+      echo "Failed to load apptainer and singularity, cannot proceed"
+      exit 1
+    fi
+  fi
 fi
 
 echo "SLURM_JOB_NODELIST: $SLURM_JOB_NODELIST"
 echo "HOSTNAME: $(hostname)"
 
-# Get the head node (current node)
 head_node=$(hostname)
-# head_node_ip=$(hostname -i)
 echo "Head node: $head_node"
-echo "Head node IP: $head_node_ip"
 
-# Query total available resources on the node
+# Query total available resources on the node, all nodes are the same (assuming the sbatch constraints are properly managed according to your environment)
 NUM_CPUS=$(lscpu | awk '/^CPU\(s\):/ { print $2 }')
 NUM_GPUS=$(nvidia-smi -L | wc -l)
 
@@ -35,11 +43,10 @@ echo "SLURM_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK"
 echo "SLURM_GPUS_PER_TASK=$SLURM_GPUS_PER_TASK"
 
 port=6379
-# ip_head="${head_node_ip}:${port}"
-ip_head="${head_node}:${port}"
-export ip_head
-echo "IP Head: $ip_head"
-export RAY_ADDRESS=$ip_head
+head_addr="${head_node}:${port}"
+export head_addr
+echo "Head Address: $head_addr"
+export RAY_ADDRESS=$head_addr
 
 echo "Starting Ray HEAD at $head_node"
 apptainer exec --nv hspn.sif ray start --head \
@@ -58,7 +65,7 @@ for node in "${all_nodes[@]}"; do
       echo "Starting Ray WORKER at $node"
       srun --nodes=1 --ntasks=1 -w "$node" --exclusive \
           apptainer exec --nv hspn.sif ray start \
-          --address "$ip_head" \
+          --address "$head_addr" \
           --num-cpus "${SLURM_CPUS_PER_TASK}" \
           --num-gpus "${SLURM_GPUS_PER_TASK}" \
           --block &
@@ -84,4 +91,4 @@ apptainer exec --nv hspn.sif python -u -m hspn.train \
     --config-name=train_hpo_basic \
     --multirun \
     hydra/launcher=ray \
-    hydra.launcher.ray.init.address=$ip_head
+    hydra.launcher.ray.init.address=$head_addr
