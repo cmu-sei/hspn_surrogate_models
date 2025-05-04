@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import h5py
 import torch
@@ -16,14 +16,14 @@ class H5Dataset(IterableDataset):
     def __init__(
         self,
         file_path: Path,
-        branch_batch_size: int = 5,
-        trunk_batch_size: int = 10,
+        branch_batch_size: Optional[int] = 100,
+        trunk_batch_size: Optional[int] = 100_000,
+        start: Union[int, float] = 0,
+        end: Union[int, float] = 1,
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         self.file_path = file_path
-        self.branch_batch_size = branch_batch_size
-        self.trunk_batch_size = trunk_batch_size
         self.dtype = dtype
 
         self.is_distributed = dist.is_initialized()
@@ -35,14 +35,42 @@ class H5Dataset(IterableDataset):
         self.branch = self.file["branch"][:]
         trunk = self.file["trunk"]
         output = self.file["output"]
+        self.branch_batch_size = (
+            branch_batch_size
+            if branch_batch_size and branch_batch_size > 0
+            else self.branch.shape[0]
+        )
+        self.trunk_batch_size = (
+            trunk_batch_size
+            if trunk_batch_size and trunk_batch_size > 0
+            else self.trunk.shape[0]
+        )
 
         logger.info(
             f"Loaded Branch={self.branch.shape} Trunk={trunk.shape} Output={output.shape}"
         )
 
+        if start <= 1:
+            trunk_start = int(start * trunk.shape[0])
+        else:
+            trunk_start = start
+        if end <= 1:
+            trunk_end = int(end * trunk.shape[0])
+        else:
+            trunk_end = end
+
+        trunk_n = trunk_end - trunk_start
+        logger.info(
+            f"Calculated dataset subset: {start=} {end=} {trunk_start=} {trunk_end=} {trunk_n=}"
+        )
+        assert trunk_n > 0, (
+            f"Trunk start and end indices must be valid ({trunk_start}, {trunk_end})"
+        )
+
         # Each worker gets a slice of the trunk data
-        chunk_size = trunk.shape[0] // self.world_size
+        chunk_size = trunk_n // self.world_size
         trunk_start = self.rank * chunk_size
+
         trunk_end = (
             (self.rank + 1) * chunk_size
             if self.rank < self.world_size - 1
@@ -50,7 +78,7 @@ class H5Dataset(IterableDataset):
         )
 
         logger.info(
-            f"Subsetting rows {trunk_start:,} to {trunk_end:,} ({trunk_end-trunk_start:,}/{trunk.shape[0]:,})"
+            f"Subsetting rows {trunk_start:,} to {trunk_end:,} ({trunk_end - trunk_start:,}/{trunk.shape[0]:,})"
         )
 
         trunk_chunk_size = (trunk_end - trunk_start) * trunk.shape[
@@ -106,7 +134,9 @@ class H5Dataset(IterableDataset):
         trunk_batches = (n_trunk + self.trunk_batch_size - 1) // self.trunk_batch_size
 
         # Number of branch batches, including partial batches
-        branch_batches = (n_branch + self.branch_batch_size - 1) // self.branch_batch_size
+        branch_batches = (
+            n_branch + self.branch_batch_size - 1
+        ) // self.branch_batch_size
 
         return trunk_batches * branch_batches
 

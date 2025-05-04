@@ -1,17 +1,14 @@
 defaults:
   - override hydra/hydra_logging: custom
 
-hydra:
-  output_subdir: config
-
-# Basic training parameters
+# Basic training options -------------------------------------------------------
 seed: 42
 n_epochs: 2
 comm_backend: nccl
 log_interval: 50 # number of batches
 checkpoint_dir: ${hydra:runtime.output_dir}
 
-# Model configuration
+# Model config -----------------------------------------------------------------
 model:
   _target_: hspn.model.DeepOperatorNet
   branch_dim: 1
@@ -30,19 +27,26 @@ model:
   einsum_pattern: ij,kj->ik
 
 # Data configuration
-dataloader:
+dataloader: &train_loader
   _target_: torch.utils.data.DataLoader
-  dataset:
+  dataset: &train_dataset
     _target_: hspn.dataset.H5Dataset
     file_path: ${extra.data_dir}/don_dataset.h5
-    # TODO: support uneven batch sizes? ask jasmine
-    branch_batch_size: 100000
-    trunk_batch_size: 100000
-  batch_size: null  # Do not change this
-  shuffle: false # Do not change this
+    branch_batch_size: null
+    trunk_batch_size: 1e6
+    start: 0.0
+    end: 0.8
+  batch_size: null  # Do not change this when using `hspn.dataset.H5Dataloader` which already yields batches
+  shuffle: false # Do not change this when using `hspn.dataset.H5Dataloader` which is an `torch.utils.data.IterableDataset``
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
+val_dataloader:
+  <<: *train_loader
+  dataset:
+    <<: *train_dataset
+    start: 0.8
+    end: 1.0
 
 # Optimizer configuration
 optimizer_factory:
