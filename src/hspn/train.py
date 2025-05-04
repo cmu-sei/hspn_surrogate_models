@@ -14,6 +14,7 @@ from torch.optim.optimizer import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from tqdm.contrib.logging import tqdm_logging_redirect
+from torch.nn import MSELoss
 
 from hspn.dataset import H5Dataset
 from hspn.tracker import Tracker
@@ -29,6 +30,7 @@ class TrainConfig:
     checkpoint_dir: Path
     model: nn.Module
     dataloader: DataLoader
+    val_dataloader: DataLoader
     optimizer_factory: Callable[..., Optimizer]
     scheduler_factory: Callable[..., LRScheduler]
     comm_backend: Literal["nccl", "gloo"]
@@ -50,6 +52,30 @@ class TrainConfig:
                 f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by {H5Dataset!s}"
                 "Please apply batch settings to the dataset."
             )
+
+
+@torch.inference_mode()
+def evaluate(model: nn.Module, dataloader: DataLoader, device: torch.device) -> float:
+    original_mode = model.training  # Save the original mode
+    model.eval()
+    total_loss = 0.0
+    num_samples = 0
+    criterion = MSELoss()
+
+    try:
+        for branch_in, trunk_in, output in dataloader:
+            branch_in = branch_in.to(device)
+            trunk_in = trunk_in.to(device)
+            output = output.to(device)
+
+            pred = model(branch_in, trunk_in)
+            loss = criterion(pred, output)
+            total_loss += loss.item() * len(branch_in)  # Weight by batch size
+            num_samples += len(branch_in)
+    finally:
+        model.train(original_mode)  # Restore the original mode
+
+    return total_loss / num_samples if num_samples > 0 else float("inf")
 
 
 @hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
@@ -198,6 +224,12 @@ def main(cfg: DictConfig) -> float:
                 logger.info(
                     f"Train Epoch: {epoch} completed in {time.time() - epoch_start_time:.3f}s Batches: {epoch_batches}, Avg Batch Total Loss: {avg_loss:.6f}"
                 )
+                if config.val_dataloader:
+                    val_loss = evaluate(model, config.val_dataloader, device)
+                    logger.info(f"Validation Loss: {val_loss:.6f}")
+                    if rank == 0 and tracker:
+                        tracker.log_scalar("val/loss", val_loss, global_step)
+
     except:
         logger.exception("Failed")
         raise
