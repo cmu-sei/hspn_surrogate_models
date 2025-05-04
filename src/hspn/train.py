@@ -55,27 +55,34 @@ class TrainConfig:
 
 
 @torch.inference_mode()
-def evaluate(model: nn.Module, dataloader: DataLoader, device: torch.device) -> float:
-    original_mode = model.training  # Save the original mode
-    model.eval()
-    total_loss = 0.0
-    num_samples = 0
-    criterion = MSELoss()
+def evaluate(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> float:
+    numer_acc = torch.zeros(1, device=device)
+    denom_accu = torch.zeros(1, device=device)
+    diff_buf = None
 
-    try:
-        for branch_in, trunk_in, output in dataloader:
-            branch_in = branch_in.to(device)
-            trunk_in = trunk_in.to(device)
-            output = output.to(device)
+    for branch_in, trunk_in, output in dataloader:
+        branch_in = branch_in.to(device, non_blocking=True)
+        trunk_in = trunk_in.to(device, non_blocking=True)
+        output = output.to(device, non_blocking=True)
 
-            pred = model(branch_in, trunk_in)
-            loss = criterion(pred, output)
-            total_loss += loss.item() * len(branch_in)  # Weight by batch size
-            num_samples += len(branch_in)
-    finally:
-        model.train(original_mode)  # Restore the original mode
+        pred = model(branch_in, trunk_in)
 
-    return total_loss / num_samples if num_samples > 0 else float("inf")
+        if diff_buf is None or diff_buf.shape != pred.shape:
+            diff_buf = torch.empty_like(pred)
+
+        torch.sub(pred, output, out=diff_buf)
+        numer_acc.add_(torch.dot(diff_buf.flatten(), diff_buf.flatten()))
+        denom_accu.add_(torch.dot(output.flatten(), output.flatten()))
+
+    return (
+        (numer_acc / denom_accu.clamp_min(1e-12)).item()
+        if numer_acc > 0
+        else float("inf")
+    )
 
 
 @hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
@@ -225,6 +232,7 @@ def main(cfg: DictConfig) -> float:
                     f"Train Epoch: {epoch} completed in {time.time() - epoch_start_time:.3f}s Batches: {epoch_batches}, Avg Batch Total Loss: {avg_loss:.6f}"
                 )
                 if config.val_dataloader:
+                    _ = model.eval()
                     val_loss = evaluate(model, config.val_dataloader, device)
                     logger.info(f"Validation Loss: {val_loss:.6f}")
                     if rank == 0 and tracker:
