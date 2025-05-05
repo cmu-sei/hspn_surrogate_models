@@ -92,7 +92,7 @@ def evaluate(
 
     return (
         (numer_acc / denom_accu.clamp_min(1e-12)).item()
-        if numer_acc > 0
+        if denom_accu.item() > 0
         else float("inf")
     )
 
@@ -101,11 +101,14 @@ def evaluate(
 def main(cfg: DictConfig) -> float:
     OmegaConf.resolve(cfg)
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
+    import random, numpy
+
+    random.seed(cfg.seed)
+    numpy.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     rank, world_size = setup_distributed()
     best_val_loss = float("inf")
-    best_epoch = 0
-    epoch = 0
+    epoch = best_epoch = 1
     start_time = time.time()
     tracker = None
     try:
@@ -141,7 +144,7 @@ def main(cfg: DictConfig) -> float:
                 scheduler=scheduler,
                 map_location=device,
             )
-            best_epoch = epoch = ckpt.get("epoch", 0)
+            best_epoch = epoch = ckpt.get("epoch", 1)
             global_step = ckpt.get("global_step", 0)
             best_val_loss = ckpt.get("best_val_loss", best_val_loss)
             if epoch >= config.n_epochs:
@@ -169,7 +172,7 @@ def main(cfg: DictConfig) -> float:
         else:
             progress_bar = NullProgress()
         with progress_bar:
-            for epoch in range(epoch, config.n_epochs):
+            for epoch in range(epoch, config.n_epochs + 1):
                 epoch_total_loss = 0.0
                 epoch_batches = 0
                 epoch_start_time = time.time()
@@ -233,9 +236,9 @@ def main(cfg: DictConfig) -> float:
                 _ = model.eval()
                 val_loss = evaluate(model, config.val_dataloader, device)
                 _ = model.train()
-                logger.info(f"Validation Loss: {val_loss:.6f}")
+                logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
                 if rank == 0 and tracker:
-                    tracker.log_scalar("val/loss", val_loss, global_step)
+                    tracker.log_scalar("val/relative_l2_loss", val_loss, global_step)
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -259,15 +262,15 @@ def main(cfg: DictConfig) -> float:
         logger.exception("Failed")
         raise
     finally:
-        if rank == 0 and tracker:
-            tracker.close()
-            logger.info(
-                f"{epoch + 1}/{cfg.n_epochs} train epochs completed in {time.time() - start_time:.3f}s"
-            )
-            logger.info(f"    Best Epoch: {best_epoch}")
-            logger.info(f"    Best Val Loss: {best_val_loss:.6f}")
         if dist.is_initialized():
             dist.destroy_process_group()
+        if rank == 0 and tracker:
+            logger.info(
+                f"{epoch}/{cfg.n_epochs} train epochs completed in {time.time() - start_time:.3f}s"
+            )
+            logger.info(f"    Best Epoch: {best_epoch}")
+            logger.info(f"    Best Val Relative L2 Loss: {best_val_loss:.6f}")
+            tracker.close()
 
     return best_val_loss
 
