@@ -13,12 +13,24 @@ from torch import nn
 from torch.optim.optimizer import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-from tqdm.contrib.logging import tqdm_logging_redirect
 from torch.nn import MSELoss
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TaskProgressColumn,
+    TimeRemainingColumn,
+)
+
 
 from hspn.dataset import H5Dataset
 from hspn.tracker import Tracker
-from hspn.train_utils import load_checkpoint, save_checkpoint, setup_distributed
+from hspn.train_utils import (
+    NullProgress,
+    load_checkpoint,
+    save_checkpoint,
+    setup_distributed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +103,8 @@ def main(cfg: DictConfig) -> float:
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
     torch.manual_seed(cfg.seed)
     rank, world_size = setup_distributed()
-    best_epoch_total_loss = float("inf")
+    best_val_loss = float("inf")
     best_epoch = 0
-    total_batches = 0
-    total_loss = 0
     epoch = 0
     start_time = time.time()
     tracker = None
@@ -102,12 +112,16 @@ def main(cfg: DictConfig) -> float:
         # Make sure we instantiate after setting up distributed since some components are distributed-aware
         config: TrainConfig = TrainConfig(**hydra.utils.instantiate(cfg))
         config.validate()
-        model = config.model.train()
         logger.info(
             f"TrainConfig:\n{pprint.pformat(config, width=120, indent=2, sort_dicts=False)}"
         )
+        device = torch.device(rank)
+        logger.info(f"Using {device}")
+        model = config.model.train().to(device)
         if world_size > 1:
-            nn.parallel.DistributedDataParallel(config.model, device_ids=[rank])
+            model = nn.parallel.DistributedDataParallel(
+                model, device_ids=[rank], output_device=rank
+            )
         dataloader = config.dataloader
         optimizer = config.optimizer_factory(model.parameters())
         if config.scheduler_factory:
@@ -115,11 +129,6 @@ def main(cfg: DictConfig) -> float:
         else:
             scheduler = None
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using {device}")
-        model.to(device)
-
-        epoch = 0
         global_step = 0
         if config.checkpoint_dir.exists() and (
             ckpts := list(config.checkpoint_dir.glob("checkpoint_*.pt"))
@@ -132,35 +141,46 @@ def main(cfg: DictConfig) -> float:
                 scheduler=scheduler,
                 map_location=device,
             )
-            epoch = ckpt["epoch"]
+            best_epoch = epoch = ckpt.get("epoch", 0)
             global_step = ckpt.get("global_step", 0)
+            best_val_loss = ckpt.get("best_val_loss", best_val_loss)
             if epoch >= config.n_epochs:
                 logger.warning(
                     f"Loaded checkpoint has epoch={ckpt['epoch']} >= {config.n_epochs=}"
                 )
+            logger.info(
+                f"After loading checkpoint epoch=best_epoch={best_epoch} {global_step=} {best_val_loss=}"
+            )
 
         cfg_dict = OmegaConf.to_container(cfg)
         assert isinstance(cfg_dict, dict)
 
-        if rank == 0 and config.tracker_config:
-            tracker = Tracker(**config.tracker_config)
-            tracker.log_hparams(cfg_dict)
+        if rank == 0:
+            if config.tracker_config:
+                tracker = Tracker(**config.tracker_config)
+                tracker.log_hparams(cfg_dict)
+            progress_bar = Progress(
+                "[progress.description]{task.description}",
+                MofNCompleteColumn(),
+                BarColumn(bar_width=None),
+                TaskProgressColumn(show_speed=True),
+                TimeRemainingColumn(),
+            )
+        else:
+            progress_bar = NullProgress()
+        with progress_bar:
+            for epoch in range(epoch, config.n_epochs):
+                epoch_total_loss = 0.0
+                epoch_batches = 0
+                epoch_start_time = time.time()
 
-        for epoch in range(epoch, config.n_epochs):
-            epoch_total_loss = 0.0
-            epoch_batches = 0
-            epoch_start_time = time.time()
-            epoch_elapsed = 0
-            with tqdm_logging_redirect(
-                dataloader,
-                desc=f"Epoch {epoch}",
-                unit="batch",
-                disable=(rank != 0),
-            ) as progress_bar:
+                task = progress_bar.add_task(
+                    f"Train Epoch {epoch}", total=len(dataloader)
+                )
                 for (
                     i,
                     (branch_in, trunk_in, output),
-                ) in enumerate(progress_bar):
+                ) in enumerate(dataloader):
                     model_device = model.curr_device()
                     loss = model.training_step(
                         (
@@ -177,42 +197,22 @@ def main(cfg: DictConfig) -> float:
                     optimizer.step()
                     if scheduler:
                         scheduler.step()
+                    global_step += 1
+
                     loss_val = loss.item()
                     epoch_total_loss += loss_val
                     epoch_batches += 1
-                    global_step += 1
-                    epoch_elapsed = time.time() - epoch_start_time
-                    avg_loss = epoch_total_loss / epoch_batches
-                    progress_bar.set_postfix(loss=loss_val, avg=avg_loss)
+                    progress_bar.update(task, advance=1)
 
                     if i > 0 and i % config.log_interval == 0:
                         logger.info(
-                            f"Epoch {epoch} [{i}/{len(dataloader)}] "
+                            f"Epoch {epoch} [batch {i}/{len(dataloader)}] "
                             f"Loss: {loss_val:.6f}, "
-                            f"Epoch Time Elapsed: {epoch_elapsed:.3f}s"
+                            f"Epoch Time Elapsed: {time.time() - epoch_start_time:.3f}s"
                         )
 
-                if epoch_total_loss < best_epoch_total_loss:
-                    best_epoch_total_loss = epoch_total_loss
-                    best_epoch = epoch
-                    logger.info(f"New Best Epoch: {epoch}")
-                    save_checkpoint(
-                        config.checkpoint_dir / f"checkpoint_{epoch}.pt",
-                        model.module if hasattr(model, "module") else model,
-                        optimizer,
-                        scheduler,
-                        epoch,
-                        metrics={
-                            "loss": best_epoch_total_loss,
-                            "epoch_time_elapsed": epoch_elapsed,
-                            "global_step": global_step,
-                        },
-                        extra=cfg_dict,
-                    )
-
+                avg_loss = epoch_total_loss / epoch_batches
                 if rank == 0 and tracker:
-                    avg_loss = epoch_total_loss / epoch_batches
-
                     tracker.log_scalar("train/epoch", epoch, global_step)
                     tracker.log_scalar("train/loss", epoch_total_loss, global_step)
                     tracker.log_scalar("train/avg_loss", avg_loss, global_step)
@@ -224,38 +224,52 @@ def main(cfg: DictConfig) -> float:
                     )
                     tracker.log_scalar("train/learning_rate", current_lr, global_step)
 
-                logger.info(f"{epoch_total_loss=} {epoch_batches=}")
-                total_batches += epoch_batches
-                total_loss += epoch_total_loss
-                avg_loss = epoch_total_loss / epoch_batches
                 logger.info(
                     f"Train Epoch: {epoch} completed in {time.time() - epoch_start_time:.3f}s Batches: {epoch_batches}, Avg Batch Total Loss: {avg_loss:.6f}"
                 )
-                if config.val_dataloader:
-                    _ = model.eval()
-                    val_loss = evaluate(model, config.val_dataloader, device)
-                    logger.info(f"Validation Loss: {val_loss:.6f}")
-                    if rank == 0 and tracker:
-                        tracker.log_scalar("val/loss", val_loss, global_step)
+
+                progress_bar.remove_task(task)
+
+                _ = model.eval()
+                val_loss = evaluate(model, config.val_dataloader, device)
+                _ = model.train()
+                logger.info(f"Validation Loss: {val_loss:.6f}")
+                if rank == 0 and tracker:
+                    tracker.log_scalar("val/loss", val_loss, global_step)
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_epoch = epoch
+                    logger.info(f"New Best Epoch: {epoch}")
+                    save_checkpoint(
+                        config.checkpoint_dir / "best_model.pt",
+                        model.module if hasattr(model, "module") else model,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        metrics={
+                            "val_loss": best_val_loss,
+                            "epoch": epoch,
+                            "global_step": global_step,
+                        },
+                        extra=cfg_dict,
+                    )
 
     except:
         logger.exception("Failed")
         raise
     finally:
-        # We always clean up
         if rank == 0 and tracker:
             tracker.close()
+            logger.info(
+                f"{epoch + 1}/{cfg.n_epochs} train epochs completed in {time.time() - start_time:.3f}s"
+            )
+            logger.info(f"    Best Epoch: {best_epoch}")
+            logger.info(f"    Best Val Loss: {best_val_loss:.6f}")
         if dist.is_initialized():
             dist.destroy_process_group()
-        logger.info(
-            f"{epoch}/{cfg.n_epochs} train epochs completed in {time.time() - start_time:.3f}s"
-        )
-        logger.info(f"    Batch Avg Loss: {total_loss/total_batches}")
-        logger.info(f"    N batches: {total_batches}")
-        logger.info(f"    Best Epoch: {best_epoch}")
-        logger.info(f"    Best Epoch Total Loss: {best_epoch_total_loss:.6f}")
 
-    return best_epoch_total_loss
+    return best_val_loss
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any, Dict, Literal, Optional, OrderedDict, Tuple, Union
 
+from rich.progress import TaskID
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -166,3 +167,29 @@ def load_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     return checkpoint
+
+
+class NullProgress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def add_task(self, *args, **kwargs) -> TaskID:
+        return 0
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def remove_task(self, *args, **kwargs):
+        pass
+
+    def stop(self):
+        pass
+
+    def start(self):
+        pass
+
+    def advance(self, *args, **kwargs):
+        pass
