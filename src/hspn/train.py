@@ -106,7 +106,18 @@ def main(cfg: DictConfig) -> float:
     random.seed(cfg.seed)
     numpy.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
-    rank, world_size = setup_distributed()
+
+    import subprocess
+
+    subprocess.run("nvidia-smi")
+    import os
+
+    for k, v in os.environ.items():
+        if any(x in k.lower() for x in ("ray", "slurm", "nvidia", "cuda", "tainer")):
+            logger.info(f"[ENV] {k}={v}")
+
+    # rank, world_size = setup_distributed()
+    rank, world_size = 0, 1
     best_val_loss = float("inf")
     epoch = best_epoch = 1
     start_time = time.time()

@@ -5,6 +5,8 @@
 # Usage: python -m hspn.train --config-name=train_hpo_basic
 defaults:
   - train
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
   - _self_
 
 hydra:
