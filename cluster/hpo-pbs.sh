@@ -15,7 +15,7 @@
 
 set -eu
 
-: ${ACCT:=ODEFN50352CMU} ${QUEUE:=mla} ${WALLTIME:=00:20:00} \
+: ${ACCT} ${QUEUE:=mla} ${WALLTIME:=00:20:00} \
   ${N_WORKERS:=2} ${N_TRIALS:=2} \
   ${TRAIN_OPTS:=--config-name=train_hpo_basic}
 pbs_opts="-A $ACCT -q $QUEUE -l walltime=$WALLTIME"
