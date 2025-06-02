@@ -31,17 +31,13 @@ class Tracker:
                 self.writer = SummaryWriter(log_dir=str(self.log_dir))
                 self.logger.info(f"TensorBoard logging initialized at {self.log_dir}")
             except ImportError:
-                self.logger.error(
-                    "Could not import SummaryWriter. Install tensorboard."
-                )
+                self.logger.error("Could not import SummaryWriter. Install tensorboard.")
                 raise
         elif backend == "aim":
             try:
                 import aim
 
-                self.writer = aim.Run(
-                    experiment=self.experiment_name, repo=str(self.log_dir)
-                )
+                self.writer = aim.Run(experiment=self.experiment_name, repo=str(self.log_dir))
                 self.logger.info(f"Aim logging initialized at {self.log_dir}")
             except ImportError:
                 self.logger.error("Could not import aim. Install aim.")
@@ -54,9 +50,7 @@ class Tracker:
         elif self.backend == "aim":
             self.writer["hparams"] = hparams  # type: ignore
 
-    def _flatten_dict(
-        self, d: Dict[str, Any], parent_key: str = "", sep: str = "/"
-    ) -> Dict[str, Any]:
+    def _flatten_dict(self, d: Dict[str, Any], parent_key: str = "", sep: str = "/") -> Dict[str, Any]:
         """Flatten a nested dictionary for TensorBoard hparams."""
         items = []
         for k, v in d.items():
@@ -64,9 +58,7 @@ class Tracker:
             if isinstance(v, dict):
                 items.extend(self._flatten_dict(v, new_key, sep=sep).items())
             else:
-                items.append(
-                    (new_key, v if isinstance(v, (bool, int, float, str)) else str(v))
-                )
+                items.append((new_key, v if isinstance(v, (bool, int, float, str)) else str(v)))
         return dict(items)
 
     def log_scalar(self, tag: str, value: float, step: int) -> None:
@@ -76,9 +68,7 @@ class Tracker:
         elif self.backend == "aim":
             self.writer.track(value, name=tag, step=step)  # type: ignore
 
-    def log_scalars(
-        self, main_tag: str, tag_scalar_dict: Dict[str, float], step: int
-    ) -> None:
+    def log_scalars(self, main_tag: str, tag_scalar_dict: Dict[str, float], step: int) -> None:
         """Log multiple scalars under the same main tag."""
         if self.backend == "tensorboard":
             self.writer.add_scalars(main_tag, tag_scalar_dict, step)  # type: ignore
