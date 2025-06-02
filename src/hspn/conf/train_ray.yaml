@@ -1,0 +1,18 @@
+defaults:
+  - train
+  - override hydra/launcher: ray
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+  - _self_
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      optimizer_factory.lr: choice(1e-5, 3e-5)
+      model.trunk_config.depth: choice(4, 6)
+  launcher:
+    ray:
+      init:
+        address: ${oc.env:RAY_ADDRESS}
+      # remote:
+      #   # any arguments to pass to ray.remote go here

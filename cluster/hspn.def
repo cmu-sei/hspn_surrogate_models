@@ -9,9 +9,9 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
       apt-get install -y redis-server curl && \
       rm -rf /var/lib/apt/lists/*
     cd /workspace && \
-      pip install --no-deps -e . && \
+      pip install --no-cache-dir --no-deps -e . && \
       # known working versions for this specific 2403 image
-      pip install \
+      pip install --no-cache-dir \
         hydra-core==1.3.2 \
         hydra-optuna-sweeper==1.2.0 \
         hydra-rq-launcher==1.2.0 \
@@ -22,9 +22,10 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
         h5py==3.13.0 \
         netcdf4==1.7.2
 
-    pip install ray==2.4.0
-    pip install hydra-ray-launcher==1.2.0 --no-deps
-    pip install "pydantic<2.0"
+    pip install --no-cache-dir ray==2.4.0 && \
+      pip install --no-cache-dir hydra-ray-launcher==1.2.0 --no-deps && \
+      pip install --no-cache-dir "pydantic<2.0" && \
+      pip cache purge
 
 %environment
     export PYTHONUNBUFFERED=1

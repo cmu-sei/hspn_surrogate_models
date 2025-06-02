@@ -16,7 +16,11 @@ handlers:
   rich:
     class: rich.logging.RichHandler
     formatter: simple
-    rich_tracebacks: true
+    show_time: false
+    show_level: false
+    rich_tracebacks: false
+    tracebacks_show_locals: false
+    enable_link_path: false
 root:
   level: INFO
-  handlers: [ rich, file ]
+  handlers: [rich, file]

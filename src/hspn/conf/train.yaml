@@ -6,8 +6,12 @@ defaults:
 seed: 42
 n_epochs: 2
 comm_backend: nccl
-log_interval: 50 # number of batches
+log_interval: 100 # number of batches
 checkpoint_dir: ${hydra:runtime.output_dir}
+enable_amp: false
+grad_accum_steps: 1
+enable_grad_scaling: false
+grad_clip_norm: null
 
 # Model config -----------------------------------------------------------------
 model:
@@ -35,10 +39,11 @@ dataloader: &train_loader
     file_path: ${extra.data_dir}/don_dataset.h5
     branch_batch_size: null
     trunk_batch_size: 100_000
-    start: 0.0
-    end: 0.8
+    branch_start: 0.0
+    # branch_end: 0.8
+    branch_end: 1.0
   batch_size: null  # Do not change this when using `hspn.dataset.H5Dataloader` which already yields batches
-  shuffle: false # Do not change this when using `hspn.dataset.H5Dataloader` which is an `torch.utils.data.IterableDataset``
+  shuffle: false # Do not change this when using `hspn.dataset.H5Dataloader` which is a `torch.utils.data.IterableDataset`
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
@@ -46,19 +51,24 @@ val_dataloader:
   <<: *train_loader
   dataset:
     <<: *train_dataset
-    start: 0.8
-    end: 1.0
+#    branch_start: 0.8
+    branch_start: 0.0
+    branch_end: 1.0
+    distributed: false # TODO: one worker runs the eval and gets the entire dataset
 
 # Optimizer configuration
 optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
-  lr: 0.0005
+  lr: 0.0001
   # lr: ${optimizer.lr}
   # weight_decay: ${optimizer.weight_decay}
 
 # Scheduler configuration
 scheduler_factory: null
+#  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+#  _partial_: true
+#  T_max: ${n_epochs}
 #   _target_: torch.optim.lr_scheduler.${scheduler.name}
 #   _partial_: true
 #   T_max: ${n_epochs}
