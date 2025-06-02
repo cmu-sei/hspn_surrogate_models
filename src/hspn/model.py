@@ -1,7 +1,7 @@
 """Deep Operator Network implementation."""
 
 import logging
-from typing import TypedDict, Tuple
+from typing import TypedDict, Tuple, List
 
 import torch
 import torch.nn as nn
@@ -32,6 +32,7 @@ class DeepOperatorNet(nn.Module):
         trunk_config: NetworkSpec,
         latent_dim: int = 20,
         einsum_pattern: str = "ij,kj->ik",
+        adapter_layer: Tuple[int, int] | None = None,
     ):
         """Initialize the DeepOperatorNet.
 
@@ -51,11 +52,13 @@ class DeepOperatorNet(nn.Module):
         self.einsum_pattern = einsum_pattern
 
         self.branch_net = self._build_net(branch_config, branch_dim)
+        if adapter_layer:
+            self.branch_net.insert(0, nn.Linear(adapter_layer[0], adapter_layer[1]))
         self.trunk_net = self._build_net(trunk_config, trunk_dim)
         self._init_weights()
 
         logger.info(f"DeepONet model created with latent_dim={self.latent_dim}")
-        logger.debug(f"Model structure:\n{self}")
+        logger.info(f"Model structure:\n{self}")
 
     def _build_net(self, net_config: NetworkSpec, input_dim: int) -> nn.Sequential:
         """Build a network based on width and depth configuration.
@@ -90,9 +93,7 @@ class DeepOperatorNet(nn.Module):
     def curr_device(self):
         return next(self.parameters()).device
 
-    def forward(
-        self, branch_input: torch.Tensor, trunk_input: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, branch_input: torch.Tensor, trunk_input: torch.Tensor) -> torch.Tensor:
         """Forward pass. Inputs must be on the correct device.
 
         Args:
@@ -102,21 +103,20 @@ class DeepOperatorNet(nn.Module):
         Returns:
             Tensor of shape (branch_batch_size, trunk_batch_size)
         """
-        branch_output = self.branch_net(
-            branch_input
-        )  # (branch_bs, branch_dim) -> (branch_bs, latent_dim)
-        trunk_output = self.trunk_net(
-            trunk_input
-        )  # [trunk_bs, trunk_dim] -> (trunk_bs, latent_dim)
+
+        # logger.info(f"{trunk_input.shape=}")
+        # logger.info(f"{branch_input.shape=}")
+        branch_output = self.branch_net(branch_input)  # (branch_bs, branch_dim) -> (branch_bs, latent_dim)
+        trunk_output = self.trunk_net(trunk_input)  # [trunk_bs, trunk_dim] -> (trunk_bs, latent_dim)
+        # logger.info(f"{branch_output.shape=}")
+        # logger.info(f"{trunk_output.shape=}")
         return torch.einsum(
             self.einsum_pattern,  # e.g. "ij, kj-> ik"
             branch_output,
             trunk_output,
         )  # (branch_bs, trunk_bs)
 
-    def training_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
-    ) -> torch.Tensor:
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """Forward pass and compute loss.
 
         This method doesn't really "train" anything, we adopt this convention from torch lightning.
@@ -131,6 +131,30 @@ class DeepOperatorNet(nn.Module):
         Returns:
             Computed loss
         """
+        # logger.info(f"{batch[-1].shape=}")
+        del batch_idx
         preds = self.forward(batch[0], batch[1])
         loss = torch.nn.functional.mse_loss(preds, batch[2], reduction="mean")
         return loss
+
+    def approx_size(self, dtype_size_bytes: int = 4) -> Tuple[float, float, float]:
+        """Estimate mode size in GB.
+
+        Args:
+            dtype_size_bytes: Number of bytes per parameter element (default 4 for float32).
+                            Use 2 for float16, 1 for int8, etc.
+
+        Returns:
+            Approximate model size in gibibytes for branch, trunk, and total.
+        """
+
+        def estimate(model: nn.Module):
+            total_params = sum(p.numel() for p in model.parameters())
+            total_buffers = sum(b.numel() for b in model.buffers())
+            total_elements = total_params + total_buffers
+            total_bytes = total_elements * dtype_size_bytes
+            return total_bytes / (1024**3)
+
+        b = estimate(self.branch_net)
+        t = estimate(self.trunk_net)
+        return (b, t, b + t)
