@@ -1,95 +1,116 @@
-import json
 import logging
 import os
+import socket
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from pprint import pformat
-from typing import Any, Dict, Literal, Optional, OrderedDict, Tuple, Union
+from typing import Any, Callable, Dict, Optional, OrderedDict, ParamSpec, TypeVar, Union
 
-from rich.progress import TaskID
 import torch
+from torch import GradScaler
 import torch.distributed as dist
+from torch.distributed.fsdp import FullyShardedDataParallel
+import torch.multiprocessing as mp
 import torch.nn as nn
+from rich.progress import TaskID
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim.optimizer import Optimizer
+from hspn.context import Context
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 logger = logging.getLogger(__name__)
 
 
-def setup_distributed(
-    backend: Literal["nccl", "gloo"] = "nccl",
-) -> Tuple[int, int]:
-    """Initialize distributed environment with support for SLURM.
+def _get_master_port():
+    preferred_port = 0
+    # If we see GPU, try to disambiguate using and offset based on the first visible GPU index
+    #  to account for multiple distributed trials on the same node.
+    #  Otherwise, find a free port and use that
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible:
+        try:
+            first_gpu = int(cuda_visible.split(",")[0])
+            preferred_port = 29500 + first_gpu
+            logger.info(
+                f"Preferring master port {preferred_port} from GPU offset (regardless of whether we are using GPUs this is just for offset)"
+            )
+        except Exception:
+            logger.info(
+                f"CUDA available but failed to parse CUDA_VISIBLE_DEVICES{cuda_visible=} for master port offset"
+            )
+            pass
+    logger.info("Creating socket")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            logger.info(f"Asking for port {'from os' if preferred_port == 0 else preferred_port}")
+            s.bind(("", preferred_port))
+            port = s.getsockname()[1]
+        except OSError:
+            logger.info(f"Could not get port {preferred_port} asking for a port from os")
+            s.bind(("", 0))
+            port = s.getsockname()[1]
+    logger.info(f"Setting master port {port}")
+    return port
 
-    Handles both Slurm and manual initialization.
 
-    Args:
-        backend: PyTorch distributed backend
-
-    Returns:
-        Tuple of (local_rank, world_size)
-    """
-    # Check if running under Slurm
-    if "SLURM_PROCID" in os.environ:
-        logger.info(f"SLURM detected {os.environ['SLURM_PROCID']=}")
-        rank = int(os.environ["SLURM_PROCID"])
-        world_size = int(os.environ["SLURM_NTASKS"])
-        local_rank = int(os.environ["SLURM_LOCALID"])
-
-        # Set master address for communication
-        if "SLURM_LAUNCH_NODE_IPADDR" in os.environ:
-            os.environ["MASTER_ADDR"] = os.environ["SLURM_LAUNCH_NODE_IPADDR"]
-        elif "SLURM_JOB_NODELIST" in os.environ:
-            # Parse nodelist to get master node
-            # might need to use the 'scontrol show hostname' command to do this properly
-            # TODO:
-            master_node = os.environ["SLURM_JOB_NODELIST"].split(",")[0]
-            os.environ["MASTER_ADDR"] = master_node
+def worker_fn(rank: int, world_size: int, fn, args, kwargs):
+    os.environ["RANK"] = str(rank)
+    backend = "gloo"
+    if torch.cuda.is_available():
+        backend = "nccl"
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        if cvd and len(cvd.split(",")) == 1:
+            logger.info(f'Found CUDA_VISIBLE_DEVICES="{cvd}" skipping `torch.cuda.set_device`')
         else:
-            os.environ["MASTER_ADDR"] = "127.0.0.1"
+            logger.info(f'Found CUDA_VISIBLE_DEVICES="{cvd}" setting `torch.cuda.set_device({rank})`')
+            torch.cuda.set_device(rank)
+    logger.info(f"Initializing process group {backend=} {rank=} {world_size=}")
+    dist.init_process_group(backend=backend, init_method="env://", rank=rank, world_size=world_size)
+    try:
+        res = fn(*args, **kwargs)
+        logger.info(f"returned from func w value {res} shutting down")
+    finally:
+        dist.destroy_process_group()
 
-        # Set master port (avoid conflicts between different jobs)
-        job_id = os.environ.get("SLURM_JOB_ID", "0")
-        os.environ["MASTER_PORT"] = str(12345 + int(job_id) % 10000)
 
-    elif "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        # Manual distributed setup
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+def wrap_as_distributed(fn: Callable[P, R]):
+    @wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs):
+        if torch.cuda.is_available():
+            world_size = torch.cuda.device_count()
+        else:
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-        if "MASTER_ADDR" not in os.environ:
-            os.environ["MASTER_ADDR"] = "127.0.0.1"
-        if "MASTER_PORT" not in os.environ:
-            os.environ["MASTER_PORT"] = "12345"
-    else:
-        logger.info("Running without distributed.")
-        rank = 0
-        world_size = 1
-        local_rank = 0
+        if world_size <= 1:
+            logger.info("Running without distributed.")
+            fn(*args, **kwargs)
+            return
 
-    if world_size > 1:
-        logger.info("Initializing process group.")
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
-
-        logger.info(
-            f"Initialized distributed process group: "
-            f"rank={rank}/{world_size}, "
-            f"local_rank={local_rank}, "
-            f"master={os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
+        master_port = _get_master_port()
+        os.environ["WORLD_SIZE"] = str(world_size)
+        os.environ["MASTER_PORT"] = str(master_port)
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        logger.info(f"Spawning {world_size=} processes. {os.environ.get('MASTER_ADDR')}:{master_port}")
+        mp.spawn(
+            worker_fn,
+            args=(world_size, fn, args, kwargs),
+            nprocs=world_size,
+            join=True,
         )
 
-        # Set device based on local rank
-        if backend == "nccl":
-            torch.cuda.set_device(local_rank)
-
-    return rank, world_size
+    return wrapper
 
 
+@Context.on_rank(0)
 def save_checkpoint(
     filepath: Union[str, Path],
     model: nn.Module,
     optimizer: Optimizer,
     scheduler: Optional[Any],
+    gradscaler: Optional[GradScaler],
     epoch: int,
     metrics: Dict[str, float],
     extra: Optional[Dict] = None,
@@ -98,39 +119,62 @@ def save_checkpoint(
 
     Args:
         filepath: Path to save the checkpoint
-        model: Model to save
+        model: Model to save, will be heuristically unwrapped
         optimizer: Optimizer state to save
         scheduler: Learning rate scheduler to save (optional)
+        gradscaler: `torch.GradScaler` to save (optional)
         epoch: Current epoch number
         metrics: Dictionary of metrics to save
-        extra: Any extra metadata to save
+        extra: Any extra metadata to save (optional)
     """
+    logger.info("Entering save checkpoint")
     rank = dist.get_rank() if dist.is_initialized() else 0
+    logger.info("Saving checkpoint...")
 
     if rank != 0:
         return
     filepath = Path(filepath).resolve()
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
+    logger.info("Moving model state dict to cpu")
+    cpu_sd = {k: v.cpu() for k, v in unwrap(model).state_dict().items()}
+
+    def optim_state_to(optim, device="cpu"):
+        logger.info("Moving optim state dict to cpu")
+        opt_sd = optim.state_dict()
+        cpu_opt_state = {}
+        for param_id, param_state in opt_sd["state"].items():
+            cpu_opt_state[param_id] = {
+                k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in param_state.items()
+            }
+        return opt_sd
+
+    def sched_state_to(sched, device="cpu"):
+        logger.info("Moving sched state dict to cpu")
+        return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in sched.state_dict().items()}
+
     checkpoint = {
         "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict() if optimizer else None,
-        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+        "model_state_dict": cpu_sd,
+        "optimizer_state_dict": optim_state_to(optimizer) if optimizer else None,
+        "scheduler_state_dict": sched_state_to(scheduler) if scheduler else None,
+        "gradscaler_state_dict": sched_state_to(gradscaler) if gradscaler else None,
         "metrics": metrics,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
         "extra": extra,
     }
 
+    logger.info("Saving file")
     torch.save(checkpoint, filepath)
     logger.info(f"Saved checkpoint to {filepath!s}")
 
 
 def load_checkpoint(
     filepath: Union[str, Path],
-    model: Union[nn.Module, None] = None,
-    optimizer: Union[Optimizer, None] = None,
-    scheduler: Union[Any, None] = None,
+    model: Optional[nn.Module] = None,
+    optimizer: Optional[Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    gradscaler: Optional[GradScaler] = None,
     map_location: Union[str, torch.device, None] = None,
 ) -> Dict[str, Any]:
     """Load model checkpoint.
@@ -140,6 +184,7 @@ def load_checkpoint(
         model: Model to load weights into (optional)
         optimizer: Optimizer to load state into (optional)
         scheduler: Learning rate scheduler to load state into (optional)
+        gradscaler: GradScaler to load state into (optional)
         map_location: Device to map tensors to
 
     Returns:
@@ -166,7 +211,76 @@ def load_checkpoint(
         logger.info("Loading scheduler state")
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
+    if gradscaler is not None and "gradscaler_state_dict" in checkpoint:
+        logger.info("Loading gradscaler state")
+        gradscaler.load_state_dict(checkpoint["gradscaler_state_dict"])
+
     return checkpoint
+
+
+def unwrap(model: Union[nn.Module, DistributedDataParallel, FullyShardedDataParallel]) -> nn.Module:
+    return getattr(model, "module", model)
+
+
+import threading
+import logging
+
+_log_ctx = threading.local()
+
+
+def set_log_context(**kwargs):
+    for k, v in kwargs.items():
+        setattr(_log_ctx, k, v)
+
+
+def clear_log_context():
+    _log_ctx.__dict__.clear()
+
+
+class GlobalLogContextFilter(logging.Filter):
+    def filter(self, record):
+        for attr in ["rank", "world_size", "backend"]:
+            value = getattr(_log_ctx, attr, None)
+            if not hasattr(record, attr):
+                setattr(record, attr, value)
+        return True
+
+
+def _patch_formatter(formatter: logging.Formatter):
+    """Patch the formatter to always include rank/world_size/backend placeholders."""
+    base_format = formatter._fmt
+    if not base_format:
+        return
+
+    if "%(rank)" not in base_format and "%(world_size)" not in base_format:
+        formatter._fmt = f"[rank=%(rank)s world_size=%(world_size)s] {base_format}"
+
+    base_format = formatter._style._fmt
+    if not base_format:
+        return
+    if "%(rank)" not in base_format and "%(world_size)" not in base_format:
+        formatter._style._fmt = f"[rank=%(rank)s world_size=%(world_size)s] {base_format}"
+
+
+def install_global_log_context():
+    """Inject context into all log records and patch format strings to include rank info."""
+    root_logger = logging.getLogger()
+    filter_instance = GlobalLogContextFilter()
+
+    for handler in root_logger.handlers:
+        handler.addFilter(filter_instance)
+        if hasattr(handler, "formatter") and handler.formatter:
+            _patch_formatter(handler.formatter)
+
+    _orig_addHandler = logging.Logger.addHandler  # Patch future handlers too
+
+    def _addHandlerWithPatch(self, hdlr):
+        hdlr.addFilter(filter_instance)
+        if hasattr(hdlr, "formatter") and hdlr.formatter:
+            _patch_formatter(hdlr.formatter)
+        _orig_addHandler(self, hdlr)
+
+    logging.Logger.addHandler = _addHandlerWithPatch
 
 
 class NullProgress:
