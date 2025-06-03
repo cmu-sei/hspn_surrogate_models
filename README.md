@@ -93,3 +93,31 @@ python src/hspn/train.py model.<TAB><TAB>
 
 > Note: depending on your machine completion may lag a bit.
 
+## Troubleshooting
+
+### Optuna Errors
+
+If you encounter an error such as:
+```
+ValueError: CategoricalDistribution does not support dynamic value space
+```
+This is likely because there is an Optuna DB persisted to disk (e.g., Redis) that already has a study with the same name you are using. You have changed the search space (rather than just resuming the study) and now there is a mismatch.
+
+There are a few ways to address it,
+
+1. Use a different study name either in the config file, at the CLI, or with the environment variable `OPTUNA_STUDY_NAME` which will get passed through to the config which has something like `study_name: ${oc.env:STUDY_NAME}`
+2. Delete the old study
+3. Delete the entire database if you just want to start over (may be at `.redis/` depending on the configuration, check launch script if not)
+4. Dont use the disk-persisted Optuna DB. This feature is optional and not vital to run Optuna sweeps. The example `train_hpo_optuna.yaml` sets `hydra.sweeper.storage=${oc.env:OPTUNA_STORAGE_URL,null}` where `OPTUNA_STORAGE_URL` is set at launch. If this value is `null` then an in-memory store is used and not persisted to disk.
+
+
+### Apptainer Errors
+
+If you encounter a build error such as:
+
+```
+No space left on device
+```
+
+Build in a sandbox with `--sandbox` then convert the sandbox to an image with `apptainer build image.sif image.sif/`
+
