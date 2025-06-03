@@ -54,7 +54,6 @@ val_dataloader:
 #    branch_start: 0.8
     branch_start: 0.0
     branch_end: 1.0
-    distributed: false # TODO: one worker runs the eval and gets the entire dataset
 
 # Optimizer configuration
 optimizer_factory:
