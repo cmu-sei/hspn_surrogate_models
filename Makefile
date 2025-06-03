@@ -15,13 +15,20 @@ prepare:
         trunk_normalization.method=MINMAX trunk_normalization.axis=0 \
         output_normalization.method=MINMAX $(OPTS)
 
+aim:
+	apptainer exec hspn.sif aim up
+
+aim-reindex:
+	apptainer exec hspn.sif aim storage prune && aim storage reindex
+
 # Usage: make train [OPTS="foo=false"]
 # OPTS: For additional options the user may want to add to the end of the command (e.g. OPTS="seed=55, extra.data_dir=./data --cfg=job")
 train:
 	hspn-train $(OPTS)
 
 hspn.sif:
-	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+	singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+	singularity build --fakeroot hspn.sif hspn.sif/
 
 
 OPENSSL_VERSION := 3.4.1
