@@ -1,7 +1,7 @@
 """Deep Operator Network implementation."""
 
 import logging
-from typing import TypedDict, Tuple, List
+from typing import Tuple, TypedDict
 
 import torch
 import torch.nn as nn

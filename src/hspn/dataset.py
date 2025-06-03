@@ -171,20 +171,16 @@ class H5Dataset(IterableDataset):
         """Yields complete batches."""
         n_trunk = self.trunk.shape[0]
         n_branch = self.branch.shape[0]
-        first_logged = False
         for trunk_start in range(0, n_trunk, self.trunk_batch_size):
             trunk_end = min(trunk_start + self.trunk_batch_size, n_trunk)
             for branch_start in range(0, n_branch, self.branch_batch_size):
                 branch_end = min(branch_start + self.branch_batch_size, n_branch)
                 if len(self.trunk.shape) == 2:
                     trunk_slice = self.trunk[trunk_start:trunk_end]
-                if len(self.trunk.shape) == 3:
+                elif len(self.trunk.shape) == 3:
                     trunk_slice = self.trunk[:, trunk_start:trunk_end]
-                if not first_logged:
-                    # Only print once per worker/rank, on the very first batch
-                    print(f"[rank={self.rank}] first batch indices → "
-                          f"branch [{branch_start}:{branch_end}), trunk [{trunk_start}:{trunk_end})")
-                    first_logged = True
+                else:
+                    raise ValueError(f"Trunk has invalid ndim ({len(self.trunk.shape)})")
                 yield (
                     torch.tensor(self.branch[branch_start:branch_end], dtype=self.dtype),
                     torch.tensor(trunk_slice, dtype=self.dtype),

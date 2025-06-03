@@ -8,14 +8,15 @@ from pprint import pformat
 from typing import Any, Callable, Dict, Optional, OrderedDict, ParamSpec, TypeVar, Union
 
 import torch
-from torch import GradScaler
 import torch.distributed as dist
-from torch.distributed.fsdp import FullyShardedDataParallel
 import torch.multiprocessing as mp
 import torch.nn as nn
 from rich.progress import TaskID
+from torch import GradScaler
+from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.nn.parallel import DistributedDataParallel
 from torch.optim.optimizer import Optimizer
+
 from hspn.context import Context
 
 P = ParamSpec("P")
@@ -222,8 +223,8 @@ def unwrap(model: Union[nn.Module, DistributedDataParallel, FullyShardedDataPara
     return getattr(model, "module", model)
 
 
-import threading
 import logging
+import threading
 
 _log_ctx = threading.local()
 

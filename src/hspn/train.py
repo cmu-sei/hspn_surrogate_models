@@ -1,6 +1,4 @@
-from contextlib import ExitStack, nullcontext
 import logging
-import pprint
 import random
 import time
 from dataclasses import dataclass
@@ -13,21 +11,19 @@ import torch
 from omegaconf import DictConfig
 from omegaconf.omegaconf import OmegaConf
 from rich.progress import (
-    track,
     BarColumn,
     MofNCompleteColumn,
     Progress,
     TaskProgressColumn,
     TimeRemainingColumn,
 )
-
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 
-from hspn.dataset import H5Dataset
 from hspn.context import Context
+from hspn.dataset import H5Dataset
 from hspn.tracker import Tracker
 from hspn.train_utils import (
     NullProgress,
@@ -35,7 +31,6 @@ from hspn.train_utils import (
     load_checkpoint,
     save_checkpoint,
     set_log_context,
-    unwrap,
     wrap_as_distributed,
 )
 
@@ -84,7 +79,7 @@ def evaluate(
     model: nn.Module,
     dataloader: DataLoader,
     device: torch.device,
-    progress = NullProgress(),
+    progress=NullProgress(),
 ) -> float:
     numer_acc = torch.zeros(1, device=device)
     denom_acc = torch.zeros(1, device=device)
@@ -123,7 +118,6 @@ def _main(cfg: DictConfig) -> float:
     if ctx.is_distributed:
         set_log_context(rank=ctx.rank, world_size=ctx.world_size)
         install_global_log_context()
-
 
     OmegaConf.resolve(cfg)
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
@@ -232,7 +226,7 @@ def _main(cfg: DictConfig) -> float:
                         del b_in, t_in
                         # output.record_stream(s0)
                         loss = torch.nn.functional.mse_loss(preds, output, reduction="mean")
-                        loss.mul_(world_size/accum)
+                        loss.mul_(world_size / accum)
 
                     del branch_in, trunk_in
                     scaler.scale(loss.float()).backward()
@@ -329,8 +323,8 @@ main = wrap_as_distributed(_main)
 
 if __name__ == "__main__":
     import logging
-    from logging import StreamHandler
     import sys
+    from logging import StreamHandler
 
     logging.basicConfig(
         level=logging.INFO,
