@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import h5py
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, IterableDataset
@@ -131,39 +132,40 @@ class H5Dataset(IterableDataset):
 
         trunk_chunk_size = (trunk_end - trunk_start) * trunk.shape[1]  # trunk chunk size * n trunk features
         logger.info(
-            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:_} elements in {dtype} "
-            f"{GiBfmt(GiB(trunk_chunk_size))}"
+            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:_} elements in {trunk.dtype} "
+            f"{GiBfmt(GiB(trunk_chunk_size, trunk.dtype.itemsize))}"
         )
         self.trunk = trunk[trunk_start:trunk_end]
 
         output_chunk_size = output.shape[0] * (trunk_end - trunk_start)  # branch size * trunk chunk size
         logger.info(
-            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:_} elements in {dtype} "
-            f"{GiBfmt(GiB(output_chunk_size))}"
+            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:_} elements in {output.dtype} "
+            f"{GiBfmt(GiB(output_chunk_size, output.dtype.itemsize))}"
         )
         self.output = output[:, trunk_start:trunk_end]  # (n_branch, n_trunk)
 
-        bb_gib = GiB(self.branch_batch_size * self.branch.shape[1])
-        tb_gib = GiB(self.trunk_batch_size * self.trunk.shape[1])
-        ob_gib = GiB(self.branch_batch_size * self.trunk_batch_size)
+        bb_gib = GiB(self.branch_batch_size * self.branch.shape[1], dtype.itemsize)
+        tb_gib = GiB(self.trunk_batch_size * self.trunk.shape[1], dtype.itemsize)
+        ob_gib = GiB(self.branch_batch_size * self.trunk_batch_size, dtype.itemsize)
 
         logger.info(f"Using Branch={self.branch.shape} Trunk={self.trunk.shape} Output={self.output.shape}")
         logger.info(
             f"Branch Batch Shape: ({self.branch_batch_size}, {self.branch.shape[1]}) "
             + f"{self.branch_batch_size * self.branch.shape[1]} elements "
             + GiBfmt(bb_gib)
-            + f" (param: {branch_batch_size=})"
+            + f" dtype={dtype} (param: {branch_batch_size=})"
         )
         logger.info(
             f"Trunk Batch Shape: ({self.trunk_batch_size}, {self.trunk.shape[1]}) "
             + f"{self.trunk_batch_size * self.trunk.shape[1]} elements "
             + GiBfmt(tb_gib)
-            + f" {self.trunk_batch_size / trunk_chunk_size:.1%} of chunk (param: {trunk_batch_size=})"
+            + f" dtype={dtype} {self.trunk_batch_size / trunk_chunk_size:.1%} of chunk (param: {trunk_batch_size=})"
         )
         logger.info(
             f"Output Batch: ({self.branch_batch_size}, {self.trunk_batch_size}) "
             + f"{self.branch_batch_size * self.trunk_batch_size} elements "
             + GiBfmt(ob_gib)
+            + f" dtype={dtype}"
         )
         logger.info(f"Total Batch: {GiBfmt(bb_gib + tb_gib + ob_gib)}")
 
