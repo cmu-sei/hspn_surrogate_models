@@ -20,7 +20,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 import hydra
 import numpy
@@ -66,8 +66,8 @@ class TrainConfig:
     model: nn.Module
     dataloader: DataLoader
     val_dataloader: DataLoader
-    optimizer_factory: Callable[..., Optimizer]
-    scheduler_factory: Callable[..., LRScheduler]
+    optimizer: Optimizer
+    scheduler: LRScheduler
     comm_backend: Literal["nccl", "gloo"]
     log_interval: int
     tracker_config: Optional[Dict[str, Any]]
@@ -307,7 +307,19 @@ def _main(cfg: DictConfig) -> float:
     tracker = None
 
     try:
-        config: TrainConfig = TrainConfig(**hydra.utils.instantiate(cfg))
+        model = hydra.utils.instantiate(cfg.model)
+        optimizer: Optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
+        scheduler: Optional[LRScheduler] = cfg.scheduler and hydra.utils.instantiate(
+            cfg.scheduler, dict(optimizer=optimizer)
+        )
+
+        config: TrainConfig = TrainConfig(
+            **hydra.utils.instantiate(
+                cfg,
+                model=model,
+                optimizer=optimizer,
+            )
+        )
         config.validate()
 
         device = torch.device(rank)
@@ -321,8 +333,6 @@ def _main(cfg: DictConfig) -> float:
             model = nn.parallel.DistributedDataParallel(model)
 
         dataloader = config.dataloader
-        optimizer = config.optimizer_factory(model.parameters())
-        scheduler = config.scheduler_factory(optimizer) if config.scheduler_factory else None
         scaler = torch.amp.GradScaler(device=device.type, enabled=config.enable_grad_scaling)
 
         if scaler.is_enabled():

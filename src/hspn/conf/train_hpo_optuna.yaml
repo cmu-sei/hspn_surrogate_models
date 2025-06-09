@@ -42,7 +42,7 @@ hydra:
    n_trials: ${oc.env:N_TRIALS} # max number of trials, the sweeper may find it needs fewer trials
    n_jobs: ${oc.env:N_WORKERS}
    params:
-     optimizer_factory.lr: choice(1e-5, 3e-5)
+     optimizer.lr: choice(1e-5, 3e-5)
      model.trunk_config.width: choice(50, 100)
      model.trunk_config.depth: choice(4, 6)
      model.latent_dim: choice(10, 25)

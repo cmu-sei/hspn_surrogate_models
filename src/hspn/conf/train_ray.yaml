@@ -8,7 +8,7 @@ hydra:
   mode: MULTIRUN
   sweeper:
     params:
-      optimizer_factory.lr: choice(1e-5, 3e-5)
+      optimizer.lr: choice(1e-5, 3e-5)
       model.trunk_config.depth: choice(4, 6)
   launcher:
     ray:

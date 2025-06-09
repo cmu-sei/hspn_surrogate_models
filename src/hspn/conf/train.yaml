@@ -52,7 +52,7 @@ dataloader: &train_loader
   _target_: torch.utils.data.DataLoader
   dataset: &train_dataset
     _target_: hspn.dataset.H5Dataset
-    file_path: ${extra.data_dir}/don_dataset.h5
+    file_path: ${oc.env:DATA_DIR,./data}/don_dataset.h5
     branch_batch_size: null
     trunk_batch_size: 100_000
     branch_start: 0.0 # integer offset or float 0.0 <= x <= 1.0 for a percentage
@@ -70,33 +70,26 @@ val_dataloader:
     branch_end: 1.0
 
 # Optimizer config -------------------------------------------------------------
-optimizer_factory:
+optimizer:
   _target_: torch.optim.Adam
-  _partial_: true
   lr: 0.0001
   # lr: ${optimizer.lr}
   # weight_decay: ${optimizer.weight_decay}
 
 # Scheduler config (optional) --------------------------------------------------
-scheduler_factory: null
+scheduler: null # set to null to disable
+# scheduler:
 #  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-#  _partial_: true
 #  T_max: ${n_epochs}
+#
+# scheduler:
 #   _target_: torch.optim.lr_scheduler.${scheduler.name}
-#   _partial_: true
 #   T_max: ${n_epochs}
 #   eta_min: ${scheduler.eta_min}
 
 # Experiment tracking config (optional) ----------------------------------------
-tracker_config: ${extra.aim_config}
-
-extra:
-  data_dir: ${oc.env:DATA_DIR,./data}
-  tb_config:
-    log_dir: ${checkpoint_dir}
-    backend: tensorboard
-    experiment_name: ${now:%Y-%m-%d_%H-%M-%S}_${hydra:job.name}
+# tracker: null # set to null to disable
+tracker:
   aim_config:
-    log_dir: .
-    backend: aim
-    experiment_name: ${hydra:job.name}
+    repo: .
+    experiment: ${hydra:job.config_name}
