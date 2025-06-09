@@ -1,11 +1,10 @@
-# HyperSPIN project code 
+# HyperSPIN project code
 
 
 ## Install
 
 ```sh
-url="url_here"
-git clone $url/hspn_surrogate_models
+git clone <url>/hspn_surrogate_models
 cd hspn_surrogate_models
 pip install -e .
 ```
@@ -13,8 +12,8 @@ pip install -e .
 ## Quickstart
 
 ## Preprocess Dataset
-Used to preprocess data and create an H5 dataset for use by the models.
 
+Used to preprocess data and create an H5 dataset for use by the models.
 
 ```sh
 hspn-prepare data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy] output_path=./data/don_dataset.h5
@@ -34,14 +33,24 @@ data/
 
 ## Train Model
 
-TODO: this section
-
 ```sh
-hspn-train 
+hspn-train
 ```
 
 > Note: There are more options, use `--cfg=job` to see them and read the the CLI documentation below to learn how to use this CLI.
 
+
+## Scaling HPO on HPC Clusters
+
+First, build the apptainer image with `make hspn.sif`
+
+Next, parameterize a sweep by editing a configuration file (see `train_hpo*.yaml` for examples)
+
+Finally, launch:
+
+```sh
+ACCT=XXXXXXXX cluster/hpo-pbs.sh
+```
 
 ## General CLI Usage
 
