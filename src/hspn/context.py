@@ -48,7 +48,7 @@ class Context:
     @classmethod
     def get(cls) -> "Context":
         if cls._instance is None:
-            raise RuntimeError("DistributedContext has not been initialized. Call DistributedContext() first.")
+            raise RuntimeError(f"{cls.__qualname__} has not been initialized. Create an instance first.")
         return cls._instance
 
     @property
@@ -58,6 +58,12 @@ class Context:
     @property
     def is_main_process(self) -> bool:
         return self.rank == 0
+
+    def sync(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        if torch.mps.is_available():
+            torch.mps.synchronize()
 
     def barrier(self):
         """Block until all ranks synchronize (no-op if single‑process)."""
