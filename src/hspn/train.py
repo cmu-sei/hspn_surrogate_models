@@ -276,9 +276,11 @@ def train(
 @hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
 def _main(cfg: DictConfig) -> float:
     ctx = Context()
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+
+    if os.environ.get("HSPN_DETERMINISTIC", False):
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     rank, world_size = ctx.rank, ctx.world_size
     if ctx.is_distributed:
@@ -311,7 +313,7 @@ def _main(cfg: DictConfig) -> float:
         device = torch.device(rank)
         if torch.cuda.is_available():
             torch.cuda.set_device(device)
-        logger.info(f"Using {device}")
+        logger.info(f"Using {device}/{torch.get_device_module(device).device_count()}")
 
         model = config.model.train()
         model.to(device)
