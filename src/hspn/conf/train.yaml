@@ -47,7 +47,7 @@ model:
   latent_dim: 25
   einsum_pattern: ij,kj->ik
 
-# Data configuration
+# Data config ------------------------------------------------------------------
 dataloader: &train_loader
   _target_: torch.utils.data.DataLoader
   dataset: &train_dataset
@@ -55,11 +55,10 @@ dataloader: &train_loader
     file_path: ${extra.data_dir}/don_dataset.h5
     branch_batch_size: null
     trunk_batch_size: 100_000
-    branch_start: 0.0
-    # branch_end: 0.8
-    branch_end: 1.0
-  batch_size: null # Do not change this when using `hspn.dataset.H5Dataloader` which already yields batches
-  shuffle: false # Do not change this when using `hspn.dataset.H5Dataloader` which is a `torch.utils.data.IterableDataset`
+    branch_start: 0.0 # integer offset or float 0.0 <= x <= 1.0 for a percentage
+    branch_end: 0.8
+  batch_size: null # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and already yields batches
+  shuffle: false # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and yields batches in a deterministic pattern
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
@@ -67,11 +66,10 @@ val_dataloader:
   <<: *train_loader
   dataset:
     <<: *train_dataset
-    #    branch_start: 0.8
-    branch_start: 0.0
+    branch_start: 0.8
     branch_end: 1.0
 
-# Optimizer configuration
+# Optimizer config -------------------------------------------------------------
 optimizer_factory:
   _target_: torch.optim.Adam
   _partial_: true
@@ -79,7 +77,7 @@ optimizer_factory:
   # lr: ${optimizer.lr}
   # weight_decay: ${optimizer.weight_decay}
 
-# Scheduler configuration
+# Scheduler config (optional) --------------------------------------------------
 scheduler_factory: null
 #  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
 #  _partial_: true
@@ -89,6 +87,7 @@ scheduler_factory: null
 #   T_max: ${n_epochs}
 #   eta_min: ${scheduler.eta_min}
 
+# Experiment tracking config (optional) ----------------------------------------
 tracker_config: ${extra.aim_config}
 
 extra:
