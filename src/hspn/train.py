@@ -120,6 +120,7 @@ class TrainConfig:
                 model=model,
                 optimizer=optimizer,
                 scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, dict(optimizer=optimizer)),
+                tracker=cfg.tracker if Context.get().is_main_process else None,
             )
         )
         self.validate()
