@@ -1,16 +1,16 @@
 #
 # HyperSPIN code - hspn_surrogate_models
-# 
+#
 # Copyright 2025 Carnegie Mellon University.
-# 
+#
 # NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
-# 
+#
 # Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
-# 
+#
 # [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
-# 
+#
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
-# 
+#
 # DM25-0396
 #
 
@@ -20,11 +20,12 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal, Optional
 
 import hydra
 import numpy
 import torch
+from aim import Run
 from omegaconf import DictConfig
 from omegaconf.omegaconf import OmegaConf
 from rich.progress import (
@@ -34,14 +35,13 @@ from rich.progress import (
     TaskProgressColumn,
     TimeRemainingColumn,
 )
-from torch import nn
+from torch import GradScaler, nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 
 from hspn.context import Context
 from hspn.dataset import H5Dataset
-from hspn.tracker import Tracker
 from hspn.train_utils import (
     NullProgress,
     install_global_log_context,
@@ -67,10 +67,10 @@ class TrainConfig:
     dataloader: DataLoader
     val_dataloader: DataLoader
     optimizer: Optimizer
-    scheduler: LRScheduler
+    scheduler: Optional[LRScheduler]
     comm_backend: Literal["nccl", "gloo"]
     log_interval: int
-    tracker_config: Optional[Dict[str, Any]]
+    tracker: Optional[Run]
     extra: Optional[Any] = None
 
     def __post_init__(self):
@@ -78,6 +78,24 @@ class TrainConfig:
 
     def validate(self):
         """Validate after config is instantiated."""
+
+        # Typecheck
+        def _runtime_checkable(tp: type) -> bool:
+            try:
+                isinstance(None, tp)
+                return True
+            except TypeError:
+                return False
+
+        for name, field_def in self.__dataclass_fields__.items():
+            field_type = field_def.type
+            value = getattr(self, name)
+
+            if _runtime_checkable(field_type):
+                if not isinstance(value, field_type):
+                    raise TypeError(f"Field '{name}' expected {field_type}, got {type(value)}: {value}")
+
+        # Cant batch on H5Dataset
         if (
             isinstance(getattr(self.dataloader, "dataset"), H5Dataset)
             and self.dataloader.batch_size
@@ -87,7 +105,25 @@ class TrainConfig:
                 f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by {H5Dataset!s}"
                 "Please apply batch settings to the dataset."
             )
-        assert self.grad_accum_steps >= 1
+
+        if self.grad_accum_steps < 1:
+            raise ValueError(f"Invalid value for {self.grad_accum_steps=}. Must be >= 1.")
+
+    @classmethod
+    def from_cfg(cls, cfg: DictConfig) -> "TrainConfig":
+        model = hydra.utils.instantiate(cfg.model)
+        optimizer: Optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
+
+        self: TrainConfig = TrainConfig(
+            **hydra.utils.instantiate(
+                cfg,
+                model=model,
+                optimizer=optimizer,
+                scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, dict(optimizer=optimizer)),
+            )
+        )
+        self.validate()
+        return self
 
 
 @torch.inference_mode()
@@ -128,8 +164,8 @@ def train(
     val_dataloader: DataLoader,
     optimizer: Optimizer,
     scheduler: Optional[LRScheduler],
-    scaler: torch.amp.GradScaler,
-    tracker: Optional[Tracker],
+    scaler: GradScaler,
+    tracker: Optional[Run],
     checkpoint_dir: Path,
     n_epochs: int,
     device: torch.device,
@@ -192,7 +228,7 @@ def train(
                         'Patching scaler to avoid fp64 call on MPS. You might also need to set `PYTORCH_ENABLE_MPS_FALLBACK="1"`'
                     )
                     warned = True
-                    scaler._scale.double = scaler._scale.float
+                    scaler._scale.double = scaler._scale.float  # type: ignore
 
                 epoch_batches += 1
                 epoch_total_loss += loss.item()
@@ -218,12 +254,12 @@ def train(
 
             avg_loss = epoch_total_loss / epoch_batches
             if tracker and ctx.is_main_process:
-                tracker.log_scalar("train/epoch", epoch, global_step)
-                tracker.log_scalar("train/loss", epoch_total_loss, global_step)
-                tracker.log_scalar("train/avg_loss", avg_loss, global_step)
+                tracker.track(epoch, "epoch", global_step, context={"phase": "train"})
+                tracker.track(epoch_total_loss, "loss", global_step, context={"phase": "train"})
+                tracker.track(avg_loss, "avg_loss", global_step, context={"phase": "train"})
 
                 current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
-                tracker.log_scalar("train/learning_rate", current_lr, global_step)
+                tracker.track(current_lr, "learning_rate", global_step, context={"phase": "train"})
 
             progress_bar.remove_task(task)
             ctx.barrier()
@@ -237,15 +273,13 @@ def train(
                 )
 
             # Val set
-            ctx.barrier()
             with ctx.model_eval(model):
                 val_loss = evaluate(model, val_dataloader, device)
                 logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
-            ctx.barrier()
 
             if ctx.is_main_process:
                 if tracker:
-                    tracker.log_scalar("val/relative_l2_loss", val_loss, global_step)
+                    tracker.track(val_loss, "relative_l2_loss", global_step, context={"phase": "val"})
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -268,7 +302,7 @@ def train(
                     )
 
     if _get_ddp_log := getattr(model, "_get_ddp_logging_data", False):
-        logger.info("can_set_static_graph=%s", _get_ddp_log().get("can_set_static_graph"))
+        logger.info("can_set_static_graph=%s", _get_ddp_log().get("can_set_static_graph"))  # type: ignore
 
     return best_val_loss, best_epoch, global_step
 
@@ -307,20 +341,7 @@ def _main(cfg: DictConfig) -> float:
     tracker = None
 
     try:
-        model = hydra.utils.instantiate(cfg.model)
-        optimizer: Optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
-        scheduler: Optional[LRScheduler] = cfg.scheduler and hydra.utils.instantiate(
-            cfg.scheduler, dict(optimizer=optimizer)
-        )
-
-        config: TrainConfig = TrainConfig(
-            **hydra.utils.instantiate(
-                cfg,
-                model=model,
-                optimizer=optimizer,
-            )
-        )
-        config.validate()
+        config = TrainConfig.from_cfg(cfg)
 
         device = torch.device(rank)
         if torch.cuda.is_available():
@@ -332,8 +353,7 @@ def _main(cfg: DictConfig) -> float:
         if world_size > 1:
             model = nn.parallel.DistributedDataParallel(model)
 
-        dataloader = config.dataloader
-        scaler = torch.amp.GradScaler(device=device.type, enabled=config.enable_grad_scaling)
+        scaler = GradScaler(device=device.type, enabled=config.enable_grad_scaling)
 
         if scaler.is_enabled():
             logger.info("AMP grad scaling enabled")
@@ -348,8 +368,8 @@ def _main(cfg: DictConfig) -> float:
             ckpt = load_checkpoint(
                 latest,
                 model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
+                optimizer=config.optimizer,
+                scheduler=config.scheduler,
                 gradscaler=scaler,
                 map_location=device,
             )
@@ -364,9 +384,9 @@ def _main(cfg: DictConfig) -> float:
         assert isinstance(cfg_dict, dict)
 
         if ctx.is_main_process:
-            if config.tracker_config:
-                tracker = Tracker(**config.tracker_config)
-                tracker.log_hparams(cfg_dict)
+            tracker = config.tracker
+            if tracker:
+                tracker["hparams"] = cfg_dict
 
             progress_bar = Progress(
                 "[progress.description]{task.description}",
@@ -379,11 +399,11 @@ def _main(cfg: DictConfig) -> float:
             progress_bar = NullProgress()
 
         best_val_loss, best_epoch, _ = train(
-            model=model,
-            dataloader=dataloader,
+            model=config.model,
+            dataloader=config.dataloader,
             val_dataloader=config.val_dataloader,
-            optimizer=optimizer,
-            scheduler=scheduler,
+            optimizer=config.optimizer,
+            scheduler=config.scheduler,
             scaler=scaler,
             tracker=tracker,
             checkpoint_dir=config.checkpoint_dir,

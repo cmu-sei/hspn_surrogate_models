@@ -17,15 +17,13 @@ dependencies = [
     "netcdf4>=1.7.2",
     "rich>=14.0.0",
     "torch==2.7.0",
+    "aim>=3.28.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "rq-dashboard>=0.8.2.2",
     "ruff>=0.9.7",
-]
-aim = [
-    "aim>=3.28.0",
 ]
 hpo = [
     "hydra-optuna-sweeper>=1.2.0",

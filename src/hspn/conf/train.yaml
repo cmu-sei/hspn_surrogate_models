@@ -90,6 +90,6 @@ scheduler: null # set to null to disable
 # Experiment tracking config (optional) ----------------------------------------
 # tracker: null # set to null to disable
 tracker:
-  aim_config:
-    repo: .
-    experiment: ${hydra:job.config_name}
+  _target_: aim.Run
+  repo: .
+  experiment: ${hydra:job.config_name}
