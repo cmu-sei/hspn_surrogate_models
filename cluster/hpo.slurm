@@ -1,21 +1,42 @@
 #!/bin/zsh -l
+#
+# HyperSPIN code - hspn_surrogate_models
+#
+# Copyright 2025 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM25-0396
+# Common Options
 #SBATCH --job-name=hspn-hpo-ray
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1    # each worker will get the whole node
-#SBATCH --ntasks-per-node=1    # each worker will get the whole node
-#SBATCH --mem=0                # each worker will get the whole node
-#SBATCH --cpus-per-task=1     # each worker will get the whole node
-#SBATCH --gpus-per-task=1     # each worker will get the whole node
-#SBATCH --exclusive            # each worker will get the whole node
-#SBATCH --time=01:00:00
-#SBATCH --constraint=mla
-#SBATCH --qos=frontier
 #SBATCH --output=%x-%j-step-%s-node_%N_task_%t.out
 #
+# GPU Training Options
+# Roughly ordered according to what you may need to tweak
+#SBATCH --nodes=1
+#SBATCH --time=01:00:00
+#SBATCH --qos=frontier
+#SBATCH --constraint=mla       # Request a specific GPU node type
+#SBATCH --ntasks-per-node=1    # Dont change: each worker will get the whole node
+#SBATCH --ntasks-per-node=1    # Dont change: each worker will get the whole node
+#SBATCH --mem=0                # Dont change: each worker will get the whole node
+#SBATCH --cpus-per-task=1      # Dont change: each worker will get the whole node
+#SBATCH --gpus-per-task=1      # Dont change: each worker will get the whole node
+#SBATCH --exclusive            # Dont change: each worker will get the whole node
+#
+# CPU Config for testing
 ##SBATCH --ntasks=2
+##SBATCH --ntasks-per-node=1 # Test single node
+##SBATCH --ntasks-per-node=2 # Test distributed
 ##SBATCH --qos=debug
 ##SBATCH --mem=8G
-##SBATCH --time=00:05:00
+##SBATCH --time=00:30:00
 
 echo "Job started at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
