@@ -73,19 +73,14 @@ val_dataloader:
 optimizer:
   _target_: torch.optim.Adam
   lr: 0.0001
-  # lr: ${optimizer.lr}
-  # weight_decay: ${optimizer.weight_decay}
+  # weight_decay: ...
 
 # Scheduler config (optional) --------------------------------------------------
-scheduler: null # set to null to disable
-# scheduler:
-#  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
-#  T_max: ${n_epochs}
-#
-# scheduler:
-#   _target_: torch.optim.lr_scheduler.${scheduler.name}
-#   T_max: ${n_epochs}
-#   eta_min: ${scheduler.eta_min}
+# scheduler: null # set to null to disable
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: ${n_epochs}
+  # eta_min: ...
 
 # Experiment tracking config (optional) ----------------------------------------
 # tracker: null # set to null to disable
