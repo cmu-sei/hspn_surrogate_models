@@ -1,16 +1,16 @@
 #
 # HyperSPIN code - hspn_surrogate_models
-# 
+#
 # Copyright 2025 Carnegie Mellon University.
-# 
+#
 # NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
-# 
+#
 # Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
-# 
+#
 # [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
-# 
+#
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
-# 
+#
 # DM25-0396
 #
 
@@ -18,7 +18,7 @@
 
 default:
 	docker compose run --build -it --rm -v $(shell pwd):/workspace --user $(shell id -u):$(shell id -g) -e USER=$(USER) dev
- 
+
 
 # Usage: make prepare DATA_DIR=/path/to/input/data/dir/  [OPTS="foo=false"]
 # OPTS: For additional options the user may want to add to the end of the command (e.g. OPTS="output_path=./don_dataset.h5 force=true")
@@ -43,8 +43,13 @@ train:
 	hspn-train $(OPTS)
 
 hspn.sif:
-	singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
-	singularity build --fakeroot hspn.sif hspn.sif/
+	# Standard build:
+	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+	echo "Code:" $?
+
+	# In case of memory issues use two-step build process:
+	# singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+	# singularity build --fakeroot hspn.sif hspn.sif/
 
 
 OPENSSL_VERSION := 3.4.1
@@ -75,4 +80,3 @@ pytorch-2503-staged.sif: $(OPENSSL_DIR)
 # Staged build
 hspn-2503-staged.sif: pytorch-2503-staged.sif
 	singularity build --fakeroot --bind $(shell pwd):/workspace hspn-2503-staged.sif cluster/hspn-2503.def
-
