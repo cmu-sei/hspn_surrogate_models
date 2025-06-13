@@ -42,7 +42,6 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
         hydra-optuna-sweeper==1.2.0 \
         hydra-rq-launcher==1.2.0 \
         hydra-ray-launcher \
-        tqdm==4.66.2 \
         aim==3.28.0 \
         cloudpickle==3.0.0 \
         h5py==3.13.0 \
