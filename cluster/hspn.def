@@ -32,7 +32,7 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
 %post
     # Install deps manually so we can exclude torch
     apt-get update && \
-      apt-get install -y redis-server curl && \
+      apt-get install -y redis-server iproute2 && \
       rm -rf /var/lib/apt/lists/*
     cd /workspace && \
       pip install --no-cache-dir --no-deps -e . && \
