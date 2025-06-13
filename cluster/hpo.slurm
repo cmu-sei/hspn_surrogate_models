@@ -31,12 +31,17 @@
 #SBATCH --exclusive            # Dont change: each worker will get the whole node
 #
 # CPU Config for testing
-##SBATCH --ntasks=2
-##SBATCH --ntasks-per-node=1 # Test single node
-##SBATCH --ntasks-per-node=2 # Test distributed
-##SBATCH --qos=debug
-##SBATCH --mem=8G
-##SBATCH --time=00:30:00
+# Common Options
+#SBATCH --qos=debug
+#SBATCH --mem=8G
+#SBATCH --time=00:30:00
+# Single node CPU
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+# Multi-node CPU
+##SBATCH --nodes=2
+##SBATCH --ntasks-per-node=1
+
 
 echo "Job started at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
@@ -51,7 +56,7 @@ GPUS_PER_TRIAL=${GPUS_PER_TRIAL:-1}
 # Query total available resources on the node, all nodes are the same (assuming
 #   the sbatch constraints are properly managed according to your environment)
 NUM_CPUS=$(lscpu | awk '/^CPU\(s\):/ { print $2 }')
-NUM_GPUS=$(nvidia-smi -L | wc -l)
+NUM_GPUS=$( (nvidia-smi -L | wc -l) || "0")
 # Override the SLURM values
 export SLURM_CPUS_PER_TASK=$NUM_CPUS
 export SLURM_GPUS_PER_TASK=$NUM_GPUS
@@ -142,7 +147,7 @@ export SINGULARITYENV_RAY_ADDRESS=$RAY_ADDRESS
 echo "Starting Ray HEAD @ ${RAY_ADDRESS}..."
 set -x
 srun --nodes=1 --ntasks=1 -w "$head_name" --exclusive \
-  apptainer exec "$NV_FLAG" --bind $project_root \
+  apptainer exec $NV_FLAG --bind $project_root \
     hspn.sif \
     ray start --head --num-cpus "${SLURM_CPUS_PER_TASK}" --num-gpus "${SLURM_GPUS_PER_TASK}" \
     --node-ip-address="$head_ip_addr" --port "$RAY_PORT" --block &
@@ -155,7 +160,7 @@ for node in "${worker_nodes[@]}"; do
     echo "Starting Ray WORKER @ $node"
     set -x
     srun --nodes=1 --ntasks=1 -w "$node" --exclusive \
-      apptainer exec "$NV_FLAG" --bind $project_root \
+      apptainer exec $NV_FLAG --bind $project_root \
       hspn.sif \
       ray start --address "$RAY_ADDRESS" \
       --num-cpus "${SLURM_CPUS_PER_TASK}" --num-gpus "${SLURM_GPUS_PER_TASK}" \

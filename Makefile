@@ -43,6 +43,7 @@ train:
 	hspn-train $(OPTS)
 
 hspn.sif:
+	# In case of issue, please see the documentation on building in hspn.def
 	# Standard build:
 	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
 	echo "Code:" $?
