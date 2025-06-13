@@ -13,8 +13,18 @@
 #
 # DM25-0396
 #
+# Building:
+#   Load apptainer (or singularity) module as needed.
+#   Note that singularity/apptainer are interchangeable in the below commands
+#   Navigate to project root
+#
+# Option 1: Standard build
+#   singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+#
+# Option 2: In case of memory issues use two-step sandbox build process
+#   singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+#   singularity build --fakeroot hspn.sif hspn.sif/
 
-# In project root:
 # module load singularity && singularity build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
 Bootstrap: docker
 From: nvcr.io/nvidia/pytorch:24.03-py3
@@ -40,8 +50,7 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
 
     pip install --no-cache-dir ray==2.4.0 && \
       pip install --no-cache-dir hydra-ray-launcher==1.2.0 --no-deps && \
-      pip install --no-cache-dir "pydantic<2.0" && \
-      pip cache purge
+      pip install --no-cache-dir "pydantic<2.0"
 
 %environment
     export PYTHONUNBUFFERED=1
