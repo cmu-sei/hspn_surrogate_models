@@ -70,6 +70,7 @@ TOTAL_GPUS=$((TOTAL_NODES * SLURM_GPUS_PER_TASK))
 if (( TOTAL_GPUS == 0 )); then
     N_WORKERS=1
     NV_FLAG=""
+    GPUS_PER_TRIAL=0
 else
     NV_FLAG="--nv"
     N_WORKERS=$((TOTAL_GPUS / GPUS_PER_TRIAL))
