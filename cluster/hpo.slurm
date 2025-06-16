@@ -30,15 +30,15 @@
 #SBATCH --gpus-per-task=1      # Dont change: each worker will get the whole node
 #SBATCH --exclusive            # Dont change: each worker will get the whole node
 #
-# CPU Config for testing
+## CPU Config for testing
 # Common Options
-#SBATCH --qos=debug
-#SBATCH --mem=8G
-#SBATCH --time=00:30:00
-# Single node CPU
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-# Multi-node CPU
+##SBATCH --qos=debug
+##SBATCH --mem=8G
+##SBATCH --time=00:30:00
+## Single node CPU
+##SBATCH --nodes=1
+##SBATCH --ntasks-per-node=1
+## Multi-node CPU
 ##SBATCH --nodes=2
 ##SBATCH --ntasks-per-node=1
 

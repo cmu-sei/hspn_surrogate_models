@@ -65,7 +65,7 @@ From: nvcr.io/nvidia/pytorch:24.03-py3
       apt-get install -y --no-install-recommends \
           iproute2 redis-server && \
       apt-get clean && \
-      rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/*
+      rm -rf /var/lib/apt/lists/
     cd /workspace && \
       # Install deps manually so we can exclude torch
       pip install --no-cache-dir --no-deps -e . && \

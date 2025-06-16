@@ -44,12 +44,17 @@ train:
 
 hspn.sif:
 	# In case of issue, please see the documentation on building in hspn.def
+	# If you do not have apptainer, singularity is a drop in replacement.
 	# Standard build:
-	singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+	apptainer build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
 
 	# In case of memory issues use two-step build process:
-	# singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
-	# singularity build --fakeroot hspn.sif hspn.sif/
+	# apptainer build --fakeroot --bind "$(shell pwd):/workspace" --sandbox hspn.sif/ cluster/hspn.def
+	# apptainer build --fakeroot hspn.sif hspn.sif/
+	#
+	# For a peristent sandbox cache, name it something else:
+	# apptainer build --fakeroot --bind "$(shell pwd):/workspace" --sandbox hspn.sandbox/ cluster/hspn.def
+	# apptainer build --fakeroot hspn.sif hspn.sandbox/
 
 
 OPENSSL_VERSION := 3.4.1

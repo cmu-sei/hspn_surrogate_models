@@ -57,10 +57,15 @@ See the PBS launch script for documentation on configuration options.
 ### Launch on SLURM
 
 ```sh
-sbatch --account=XXXXXXXX cluster/hpo.slurm
+sbatch --account=XXXXXXXX cluster/hpo.slurm [<args>]
 ```
 
-See the SLURM batch script for documentation on configuration options.
+See the SLURM batch script for documentation on configuration options. Args can be passed to the train task as usual e.g.,
+
+
+```sh
+sbatch --account=XXXXXXXX cluster/hpo.slurm comm_backend=gloo n_epochs=100
+```
 
 ## General CLI Usage
 
@@ -142,3 +147,26 @@ No space left on device
 ```
 
 Build in a sandbox with `--sandbox` then convert the sandbox to an image with `apptainer build image.sif image.sif/`
+
+
+For example, instead of
+
+```sh
+# Standard build:
+apptainer build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
+```
+
+Use a sandbox,
+```sh
+# Sandbox build:
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sif/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sif/
+```
+
+Apptainer/Singularity does not implement layer caching like Docker so having a persitent sandbox may be of interest to help build time during development. For a persistent sandbox, simply name it something else:
+
+```sh
+# Persistent sandbox build
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sandbox/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sandbox/
+```
