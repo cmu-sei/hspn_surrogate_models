@@ -19,42 +19,12 @@
 #   Navigate to project root
 #
 # Option 1: Standard build
-#   singularity build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
+#   apptainer build --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
 #
 # Option 2: In case of memory issues use two-step sandbox build process
-#   singularity build --sandbox --fakeroot --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
-#   singularity build --fakeroot hspn.sif hspn.sif/
+#   apptainer build --fakeroot --bind "$(shell pwd):/workspace" --sandbox hspn.sif/ cluster/hspn.def
+#   apptainer build --fakeroot hspn.sif hspn.sif/
 
-
-# apptainer build --sandbox --fakeroot hspn.sandbox/ --bind $(shell pwd):/workspace hspn.sif cluster/hspn.def
-# apptainer build --fakeroot hspn.sif hspn.sandbox/
-
-# module load singularity && singularity build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
-
-# Stage 1: System deps
-# Bootstrap: docker
-# From: debian:bullseye
-# Stage: builder
-#
-# %post
-#     set -eux
-#     apt-get update
-#     apt-get install -y --no-install-recommends iproute2
-#     # strip /sbin/ip
-#     mkdir -p /out
-#     cp /sbin/ip /out/ip
-#
-# # Stage 2: Final image
-# Bootstrap: docker
-# From: nvcr.io/nvidia/pytorch:24.03-py3
-#
-# %files from builder
-#     /out/ip /usr/local/bin/ip
-#
-# %post
-#     chmod +x /usr/local/bin/ip
-#     echo "Installed ip:"
-#     /usr/local/bin/ip --version
 
 Bootstrap: docker
 From: nvcr.io/nvidia/pytorch:24.03-py3
