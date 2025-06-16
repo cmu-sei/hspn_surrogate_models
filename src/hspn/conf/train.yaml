@@ -1,33 +1,35 @@
 #
 # HyperSPIN code - hspn_surrogate_models
-# 
+#
 # Copyright 2025 Carnegie Mellon University.
-# 
+#
 # NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
-# 
+#
 # Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
-# 
+#
 # [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
-# 
+#
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
-# 
+#
 # DM25-0396
 #
 
 defaults:
-  - override hydra/hydra_logging: custom
+  - base
+  - _self_
 
-hydra:
-  output_subdir: config
-
-# Basic training parameters
+# Basic training options -------------------------------------------------------
 seed: 42
 n_epochs: 2
 comm_backend: nccl
-log_interval: 50 # number of batches
+log_interval: 100 # number of batches
 checkpoint_dir: ${hydra:runtime.output_dir}
+enable_amp: false
+grad_accum_steps: 1
+enable_grad_scaling: false
+grad_clip_norm: null
 
-# Model configuration
+# Model config -----------------------------------------------------------------
 model:
   _target_: hspn.model.DeepOperatorNet
   branch_dim: 1
@@ -45,39 +47,44 @@ model:
   latent_dim: 25
   einsum_pattern: ij,kj->ik
 
-# Data configuration
-dataloader:
+# Data config ------------------------------------------------------------------
+dataloader: &train_loader
   _target_: torch.utils.data.DataLoader
-  dataset:
+  dataset: &train_dataset
     _target_: hspn.dataset.H5Dataset
-    file_path: ${extra.data_dir}/don_dataset.h5
-    branch_batch_size: 100000
-    trunk_batch_size: 100000
-  batch_size: null  # Do not change this when using the H5Dataset class which already yields batches
-  shuffle: false # Do not change this when using the H5Dataset class which already yields batches
+    file_path: ${oc.env:DATA_DIR,./data}/don_dataset.h5
+    branch_batch_size: null
+    trunk_batch_size: 100_000
+    branch_start: 0.0 # integer offset or float 0.0 <= x <= 1.0 for a percentage
+    branch_end: 0.8
+  batch_size: null # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and already yields batches
+  shuffle: false # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and yields batches in a deterministic pattern
   num_workers: 0
   pin_memory: true
   prefetch_factor: null
+val_dataloader:
+  <<: *train_loader
+  dataset:
+    <<: *train_dataset
+    branch_start: 0.8
+    branch_end: 1.0
 
-# Optimizer configuration
-optimizer_factory:
+# Optimizer config -------------------------------------------------------------
+optimizer:
   _target_: torch.optim.Adam
-  _partial_: true
-  lr: 0.0005
+  lr: 0.0001
+  # weight_decay: ...
 
-# Scheduler configuration
-scheduler_factory: null
+# Scheduler config (optional) --------------------------------------------------
+# scheduler: null # set to null to disable
+scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: ${n_epochs}
+  # eta_min: ...
 
-tracker_config: ${extra.aim_config}
-
-extra:
-  data_dir: ${oc.env:DATA_DIR,./data}
-  tb_config:
-    log_dir: ${checkpoint_dir}
-    backend: tensorboard
-    experiment_name: ${now:%Y-%m-%d_%H-%M-%S}_${hydra:job.name}
-  aim_config:
-    log_dir: .
-    backend: aim
-    experiment_name: ${hydra:job.name}
-
+# Experiment tracking config (optional) ----------------------------------------
+# tracker: null # set to null to disable
+tracker:
+  _target_: aim.Run
+  repo: .
+  experiment: ${hydra:job.config_name}

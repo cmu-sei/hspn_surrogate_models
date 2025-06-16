@@ -1,24 +1,25 @@
 #
 # HyperSPIN code - hspn_surrogate_models
-# 
+#
 # Copyright 2025 Carnegie Mellon University.
-# 
+#
 # NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
-# 
+#
 # Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
-# 
+#
 # [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
-# 
+#
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
-# 
+#
 # DM25-0396
 #
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import h5py
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, IterableDataset
@@ -32,14 +33,16 @@ class H5Dataset(IterableDataset):
     def __init__(
         self,
         file_path: Path,
-        branch_batch_size: int = 5,
-        trunk_batch_size: int = 10,
+        branch_batch_size: Optional[int | float] = 100,
+        trunk_batch_size: Optional[int | float] = 100_000,
+        branch_start: Union[int, float] = 0,
+        branch_end: Union[int, float] = 1,
+        trunk_start: Union[int, float] = 0,
+        trunk_end: Union[int, float] = 1,
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
-        self.file_path = file_path
-        self.branch_batch_size = branch_batch_size
-        self.trunk_batch_size = trunk_batch_size
+        self.file_path = Path(file_path).resolve()
         self.dtype = dtype
 
         self.is_distributed = dist.is_initialized()
@@ -48,65 +51,157 @@ class H5Dataset(IterableDataset):
 
         logger.info(f"Loading HDF5 dataset from {self.file_path}")
         self.file = h5py.File(self.file_path, "r", swmr=True)
-        self.branch = self.file["branch"][:]
-        trunk = self.file["trunk"]
-        output = self.file["output"]
 
+        branch = self.file["branch"]
+        assert isinstance(branch, h5py.Dataset)
+
+        trunk = self.file["trunk"]
+        assert isinstance(trunk, h5py.Dataset)
+
+        output = self.file["output"]
+        assert isinstance(output, h5py.Dataset)
+
+        if branch_batch_size:
+            assert branch_batch_size > 0
+            if 0 < branch_batch_size < 1:
+                assert isinstance(branch_batch_size, int)
+                self.branch_batch_size = int(branch_batch_size * branch.shape[0])
+            elif branch_batch_size >= 1:
+                self.branch_batch_size = int(branch_batch_size)
+        else:
+            self.branch_batch_size = branch.shape[0]
+
+        if trunk_batch_size:
+            assert trunk_batch_size > 0
+            if 0 < trunk_batch_size < 1:
+                self.trunk_batch_size = int(trunk_batch_size * trunk.shape[0])
+            elif trunk_batch_size >= 1:
+                assert isinstance(trunk_batch_size, int)
+                self.trunk_batch_size = trunk_batch_size
+        else:
+            self.trunk_batch_size = trunk.shape[0]
+
+        logger.info(f"Branch={branch.shape} Trunk={trunk.shape} Output={output.shape}")
+
+        if branch_start <= 1:
+            global_branch_start = int(branch_start * branch.shape[0])
+        else:
+            global_branch_start = branch_start
+            assert isinstance(branch_start, int)
+        if trunk_end <= 1:
+            global_branch_end = int(branch_end * branch.shape[0])
+        else:
+            assert isinstance(branch_end, int)
+            global_branch_end = branch_end
+        branch_n = global_branch_end - global_branch_start
+        assert branch_n > 0, f"Branch start and end indices must be valid ({global_branch_start}, {global_branch_end})"
+
+        if trunk_start <= 1:
+            global_trunk_start = int(trunk_start * trunk.shape[0])
+        else:
+            global_trunk_start = trunk_start
+            assert isinstance(trunk_start, int)
+        if trunk_end <= 1:
+            global_trunk_end = int(trunk_end * trunk.shape[0])
+        else:
+            assert isinstance(trunk_end, int)
+            global_trunk_end = trunk_end
+
+        trunk_n = global_trunk_end - global_trunk_start
+        self.branch_batch_size = min(self.branch_batch_size, branch_n)
+        self.trunk_batch_size = min(self.trunk_batch_size, trunk_n)
         logger.info(
-            f"Loaded Branch={self.branch.shape} Trunk={trunk.shape} Output={output.shape}"
+            f"Calculated dataset subset: "
+            f"{global_branch_start=} {global_branch_end=} {branch_n=} "
+            f"{trunk_start=} {trunk_end=} {global_trunk_start=} {global_trunk_end=} {trunk_n=}"
         )
+        assert trunk_n > 0, f"Trunk start and end indices must be valid ({global_trunk_start}, {global_trunk_end})"
+
+        # # Each worker gets a slice of the branch data
+        # branch_per_rank = branch_n // self.world_size
+        # branch_start = self.rank * branch_per_rank
+        # branch_end = (self.rank + 1) * branch_per_rank if self.rank != self.world_size - 1 else branch_n
 
         # Each worker gets a slice of the trunk data
-        chunk_size = trunk.shape[0] // self.world_size
-        trunk_start = self.rank * chunk_size
-        trunk_end = (
-            (self.rank + 1) * chunk_size
-            if self.rank < self.world_size - 1
-            else trunk.shape[0]
-        )
+        chunk_size = trunk_n // self.world_size
+        trunk_start = global_trunk_start + self.rank * chunk_size
+        trunk_end = trunk_start + ((self.rank + 1) * chunk_size if self.rank < self.world_size - 1 else trunk_n)
 
-        logger.info(
-            f"Subsetting rows {trunk_start:,} to {trunk_end:,} ({trunk_end-trunk_start:,}/{trunk.shape[0]:,})"
-        )
+        if (branch_end - branch_start) / branch.shape[0]:
+            logger.info(
+                f"Subsetting along branch {branch_start:_} to {branch_end:_} ({global_branch_end - global_branch_start:_}/{branch.shape[0]:_})"
+            )
+        if (trunk_end - trunk_start) / trunk.shape[0]:
+            logger.info(
+                f"Subsetting along trunk {trunk_start:_} to {trunk_end:_} ({trunk_end - trunk_start:_}/{trunk.shape[0]:_})"
+            )
 
-        trunk_chunk_size = (trunk_end - trunk_start) * trunk.shape[
-            1
-        ]  # trunk chunk size * n trunk features
-        logger.info(
-            f"Preloading trunk data for worker {self.rank}/{self.world_size}: {trunk_chunk_size:,} elements in {dtype} "
-            f"{trunk_chunk_size * dtype.itemsize / 1e9:.2f}gb"
-        )
-        self.trunk = self.file["trunk"][trunk_start:trunk_end]
+        def GiB(n, itemsize=dtype.itemsize) -> float:
+            return n * itemsize / (1024**3)
 
-        output_chunk_size = output.shape[0] * (
-            trunk_end - trunk_start
-        )  # branch size * trunk chunk size
-        logger.info(
-            f"Preloading output data for worker {self.rank}/{self.world_size}: {output_chunk_size:,} elements in {dtype} "
-            f"{output_chunk_size * dtype.itemsize / 1e9:.2f}gb"
-        )
-        self.output = self.file["output"][
-            :, trunk_start:trunk_end
-        ]  # (n_branch, n_trunk)
+        def GiBfmt(x) -> str:
+            return f"{x:.2f}GiB"
 
+        # Branch data is not chunked among workers as it is typically quite small
+        logger.info(f"Preloading branch data: {branch.size:_} elements in {dtype} {GiBfmt(GiB(branch.size))}")
+        self.branch = branch[global_branch_start:global_branch_end, ...]
+
+        trunk_chunk_size = (trunk_end - trunk_start) * trunk.shape[1]  # trunk chunk size * n trunk features
         logger.info(
-            f"Branch={self.branch.shape} Trunk={self.trunk.shape} Output={self.output.shape}"
+            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:_} elements in {trunk.dtype} "
+            f"{GiBfmt(GiB(trunk_chunk_size, trunk.dtype.itemsize))}"
         )
+        self.trunk = trunk[trunk_start:trunk_end]
+
+        output_chunk_size = output.shape[0] * (trunk_end - trunk_start)  # branch size * trunk chunk size
+        logger.info(
+            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:_} elements in {output.dtype} "
+            f"{GiBfmt(GiB(output_chunk_size, output.dtype.itemsize))}"
+        )
+        self.output = output[:, trunk_start:trunk_end]  # (n_branch, n_trunk)
+
+        bb_gib = GiB(self.branch_batch_size * self.branch.shape[1], dtype.itemsize)
+        tb_gib = GiB(self.trunk_batch_size * self.trunk.shape[1], dtype.itemsize)
+        ob_gib = GiB(self.branch_batch_size * self.trunk_batch_size, dtype.itemsize)
+
+        logger.info(f"Using Branch={self.branch.shape} Trunk={self.trunk.shape} Output={self.output.shape}")
+        logger.info(
+            f"Branch Batch Shape: ({self.branch_batch_size}, {self.branch.shape[1]}) "
+            + f"{self.branch_batch_size * self.branch.shape[1]} elements "
+            + GiBfmt(bb_gib)
+            + f" dtype={dtype} (param: {branch_batch_size=})"
+        )
+        logger.info(
+            f"Trunk Batch Shape: ({self.trunk_batch_size}, {self.trunk.shape[1]}) "
+            + f"{self.trunk_batch_size * self.trunk.shape[1]} elements "
+            + GiBfmt(tb_gib)
+            + f" dtype={dtype} {self.trunk_batch_size / trunk_chunk_size:.1%} of chunk (param: {trunk_batch_size=})"
+        )
+        logger.info(
+            f"Output Batch: ({self.branch_batch_size}, {self.trunk_batch_size}) "
+            + f"{self.branch_batch_size * self.trunk_batch_size} elements "
+            + GiBfmt(ob_gib)
+            + f" dtype={dtype}"
+        )
+        logger.info(f"Total Batch: {GiBfmt(bb_gib + tb_gib + ob_gib)}")
 
     def __iter__(self):
         """Yields complete batches."""
         n_trunk = self.trunk.shape[0]
         n_branch = self.branch.shape[0]
-
         for trunk_start in range(0, n_trunk, self.trunk_batch_size):
             trunk_end = min(trunk_start + self.trunk_batch_size, n_trunk)
             for branch_start in range(0, n_branch, self.branch_batch_size):
                 branch_end = min(branch_start + self.branch_batch_size, n_branch)
+                if len(self.trunk.shape) == 2:
+                    trunk_slice = self.trunk[trunk_start:trunk_end]
+                elif len(self.trunk.shape) == 3:
+                    trunk_slice = self.trunk[:, trunk_start:trunk_end]
+                else:
+                    raise ValueError(f"Trunk has invalid ndim ({len(self.trunk.shape)})")
                 yield (
-                    torch.tensor(
-                        self.branch[branch_start:branch_end], dtype=self.dtype
-                    ),
-                    torch.tensor(self.trunk[trunk_start:trunk_end], dtype=self.dtype),
+                    torch.tensor(self.branch[branch_start:branch_end], dtype=self.dtype),
+                    torch.tensor(trunk_slice, dtype=self.dtype),
                     torch.tensor(
                         self.output[branch_start:branch_end, trunk_start:trunk_end],
                         dtype=self.dtype,
@@ -124,7 +219,7 @@ class H5Dataset(IterableDataset):
         # Number of branch batches, including partial batches
         branch_batches = (n_branch + self.branch_batch_size - 1) // self.branch_batch_size
 
-        return trunk_batches * branch_batches
+        return int(trunk_batches * branch_batches)
 
     def close(self) -> None:
         """Close the data file."""

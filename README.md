@@ -1,6 +1,5 @@
 # HyperSPIN project code
 
-
 ## Install
 
 ```sh
@@ -39,17 +38,33 @@ hspn-train
 
 > Note: There are more options, use `--cfg=job` to see them and read the the CLI documentation below to learn how to use this CLI.
 
-
 ## Scaling HPO on HPC Clusters
 
 First, build the apptainer image with `make hspn.sif`
 
 Next, parameterize a sweep by editing a configuration file (see `train_hpo*.yaml` for examples)
 
-Finally, launch:
+Finally, launch...
+
+### Launch on PBS
 
 ```sh
 ACCT=XXXXXXXX cluster/hpo-pbs.sh
+```
+
+See the PBS launch script for documentation on configuration options.
+
+### Launch on SLURM
+
+```sh
+sbatch --account=XXXXXXXX cluster/hpo.slurm [<args>]
+```
+
+See the SLURM batch script for documentation on configuration options. Args can be passed to the train task as usual e.g.,
+
+
+```sh
+sbatch --account=XXXXXXXX cluster/hpo.slurm comm_backend=gloo n_epochs=100
 ```
 
 ## General CLI Usage
@@ -65,6 +80,7 @@ hspn-<train/prepare/etc> --cfg=job # or --cfg=all
 ```
 
 It is recommended to check the final config the job will execute with before running:
+
 ```sh
 hspn-<train/prepare/etc> --cfg=job # or --cfg=all for verbose information
 hspn-<train/prepare/etc> --cfg=job --resolve # causes variable references in the config to be resolved (resolving is always done at runtime, so this shows the final resolved config the job will use)
@@ -73,6 +89,7 @@ hspn-<train/prepare/etc> --cfg=job --resolve # causes variable references in the
 ## Additional CLI Features
 
 Each hspn CLI application can be invoked three ways. Using the `prepare` application as an example:
+
 1. Directly: `python src/hspn/prepare.py` Cons: need the exact filepath so it depends on what your current working directory is. Pros: support shell completion so good for interactive experimentation, see below.
 2. Module: `python -m hspn.prepare` Cons: No shell completion. Pros: Can be run anywhere as long as `hspn` is installed.
 3. Shortcut: `hspn-prepare` this is an alias for option (2) and is installed by pip in `$HOME/.local/bin/`. Cons: No shell completion, might not be optimal in containers where `$HOME/.local/bin` is not in `$PATH`. Pros: Can be run anywhere as long as `hspn` is installed, easy to discover `hspn` commands via `hspn-<TAB><TAB>`.
@@ -102,3 +119,54 @@ python src/hspn/train.py model.<TAB><TAB>
 
 > Note: depending on your machine completion may lag a bit.
 
+## Troubleshooting
+
+### Optuna Errors
+
+If you encounter an error such as:
+
+```
+ValueError: CategoricalDistribution does not support dynamic value space
+```
+
+This is likely because there is an Optuna DB persisted to disk (e.g., Redis) that already has a study with the same name you are using. You have changed the search space (rather than just resuming the study) and now there is a mismatch.
+
+There are a few ways to address it,
+
+1. Use a different study name either in the config file, at the CLI, or with the environment variable `OPTUNA_STUDY_NAME` which will get passed through to the config which has something like `study_name: ${oc.env:STUDY_NAME}`
+2. Delete the old study
+3. Delete the entire database if you just want to start over (may be at `.redis/` depending on the configuration, check launch script if not)
+4. Dont use the disk-persisted Optuna DB. This feature is optional and not vital to run Optuna sweeps. The example `train_hpo_optuna.yaml` sets `hydra.sweeper.storage=${oc.env:OPTUNA_STORAGE_URL,null}` where `OPTUNA_STORAGE_URL` is set at launch. If this value is `null` then an in-memory store is used and not persisted to disk.
+
+### Apptainer Errors
+
+If you encounter a build error such as:
+
+```
+No space left on device
+```
+
+Build in a sandbox with `--sandbox` then convert the sandbox to an image with `apptainer build image.sif image.sif/`
+
+
+For example, instead of
+
+```sh
+# Standard build:
+apptainer build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
+```
+
+Use a sandbox,
+```sh
+# Sandbox build:
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sif/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sif/
+```
+
+Apptainer/Singularity does not implement layer caching like Docker so having a persitent sandbox may be of interest to help build time during development. For a persistent sandbox, simply name it something else:
+
+```sh
+# Persistent sandbox build
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sandbox/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sandbox/
+```

@@ -14,26 +14,21 @@
 # DM25-0396
 #
 
-FROM nvcr.io/nvidia/pytorch:23.09-py3
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
-    git \
-    bash \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /workspace
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,source=pyproject.toml,target=/workspace/pyproject.toml \
-<<EOT
-pip install --cache-dir=/root/.cache/pip --upgrade pip
-constraints=()
-[[ -f /etc/pip/constraint.txt ]] && constraints=(-c /etc/pip/constraint.txt)
-pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
-EOT
-
-RUN echo "root:password" | chpasswd
-COPY --chmod=555 entrypoint.sh /entrypoint.sh
-ENTRYPOINT ["/entrypoint.sh"]
+defaults:
+  - train
+  - override hydra/launcher: ray
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+  - _self_
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      optimizer.lr: choice(1e-5, 3e-5)
+      model.trunk_config.depth: choice(4, 6)
+  launcher:
+    ray:
+      init:
+        address: ${oc.env:RAY_ADDRESS}
+      # remote:
+      #   # any arguments to pass to ray.remote go here

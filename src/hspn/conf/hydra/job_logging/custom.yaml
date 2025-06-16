@@ -14,26 +14,19 @@
 # DM25-0396
 #
 
-FROM nvcr.io/nvidia/pytorch:23.09-py3
+defaults:
+  - default
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
-    git \
-    bash \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /workspace
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,source=pyproject.toml,target=/workspace/pyproject.toml \
-<<EOT
-pip install --cache-dir=/root/.cache/pip --upgrade pip
-constraints=()
-[[ -f /etc/pip/constraint.txt ]] && constraints=(-c /etc/pip/constraint.txt)
-pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
-EOT
-
-RUN echo "root:password" | chpasswd
-COPY --chmod=555 entrypoint.sh /entrypoint.sh
-ENTRYPOINT ["/entrypoint.sh"]
+version: 1
+handlers:
+  rich:
+    class: rich.logging.RichHandler
+    formatter: simple
+    show_time: false
+    show_level: false
+    rich_tracebacks: false
+    tracebacks_show_locals: false
+    enable_link_path: false
+root:
+  level: INFO
+  handlers: [rich, file]

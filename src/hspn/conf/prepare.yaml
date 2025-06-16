@@ -15,6 +15,7 @@
 #
 
 defaults:
+  - base
   - prepare_spec
   - _self_
 

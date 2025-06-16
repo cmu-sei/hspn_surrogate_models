@@ -27,20 +27,40 @@
 
 defaults:
   - train
-  - _self_
   - override hydra/sweeper: optuna
-  - override hydra/sweeper/sampler: grid
+  - override hydra/sweeper/sampler: tpe
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+  - _self_
 
 hydra:
   mode: MULTIRUN # equivalent to -m or --multirun on the command line. (Without specifying this at some point the sweep is not performed)
   sweeper:
    direction: minimize
-   study_name: hspn
-   storage: null
+   study_name: ${oc.env:STUDY_NAME,hspn}
+   storage: ${oc.env:OPTUNA_STORAGE_URL,null}
    n_trials: ${oc.env:N_TRIALS} # max number of trials, the sweeper may find it needs fewer trials
    n_jobs: ${oc.env:N_WORKERS}
    params:
-     optimizer_factory.lr: choice(1e-5, 3e-5, 1e-4, 3e-4)
+     optimizer.lr: choice(1e-5, 3e-5)
      model.trunk_config.width: choice(50, 100)
-     model.trunk_config.depth: choice(4, 5, 6)
+     model.trunk_config.depth: choice(4, 6)
      model.latent_dim: choice(10, 25)
+n_epochs: 300
+# dataloader:
+#   dataset:
+#     trunk_batch_size: 10_000_000
+# val_dataloader:
+#   dataset:
+#
+#     trunk_batch_size: 10_000_000
+# # 1200e 2hr 8.5M bs w/ largest net trunk_depth=8 trunk_width=100 latent=50 (other models around 1300e)
+# model:
+#   latent_dim: 50
+# n_epochs: 1400
+# dataloader:
+#   dataset:
+#     trunk_batch_size: 8_500_000
+# val_dataloader:
+#   dataset:
+#     trunk_batch_size: 8_500_000

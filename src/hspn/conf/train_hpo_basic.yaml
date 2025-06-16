@@ -21,14 +21,16 @@
 # Usage: python -m hspn.train --config-name=train_hpo_basic
 defaults:
   - train
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
   - _self_
 
 hydra:
   mode: MULTIRUN # equivalent to -m or --multirun on the command line. (Without specifying this at some point the sweep is not performed)
   sweeper:
     params:
-      optimizer_factory._target_: torch.optim.Adam
-      # optimizer_factory.lr: choice(1e-5, 3e-5, 1e-4, 3e-4)
+      optimizer._target_: torch.optim.Adam
+      # optimizer.lr: choice(1e-5, 3e-5, 1e-4, 3e-4)
       # model.trunk_config.width: choice(50, 100)
       model.trunk_config.depth: choice(4, 5, 6)
       model.latent_dim: choice(10, 25)
