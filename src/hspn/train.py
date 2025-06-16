@@ -20,8 +20,9 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
+from aim.sdk.types import AimObject, AimObjectDict
 import hydra
 import numpy
 import torch
@@ -119,7 +120,7 @@ class TrainConfig:
                 cfg,
                 model=model,
                 optimizer=optimizer,
-                scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, dict(optimizer=optimizer)),
+                scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer),
                 tracker=cfg.tracker if Context.get().is_main_process else None,
             )
         )
@@ -138,19 +139,18 @@ def evaluate(
     denom_acc = torch.zeros(1, device=device)
     diff_buf = None
     taskid = progress.add_task("Evaluating", total=len(dataloader))
-    for branch_in, trunk_in, output in dataloader:
-        output = output.to(device, non_blocking=False)
-        branch_in = branch_in.to(device, non_blocking=False)
-        trunk_in = trunk_in.to(device, non_blocking=False)
+    for batch in dataloader:
+        batch = [b.to(device) for b in batch]
+        *inputs, target = batch
 
-        pred = model(branch_in, trunk_in)
+        pred = model(*inputs)
 
         if diff_buf is None or diff_buf.shape != pred.shape:
             diff_buf = torch.empty_like(pred)
 
-        torch.sub(pred, output, out=diff_buf)
+        torch.sub(pred, target, out=diff_buf)
         numer_acc.add_(torch.dot(diff_buf.flatten(), diff_buf.flatten()))
-        denom_acc.add_(torch.dot(output.flatten(), output.flatten()))
+        denom_acc.add_(torch.dot(target.flatten(), target.flatten()))
         progress.update(taskid, advance=1)
 
     Context.all_reduce_(numer_acc, op=torch.distributed.ReduceOp.SUM)
@@ -162,7 +162,7 @@ def evaluate(
 def train(
     model: nn.Module,
     dataloader: DataLoader,
-    val_dataloader: DataLoader,
+    val_dataloader: Optional[DataLoader],
     optimizer: Optimizer,
     scheduler: Optional[LRScheduler],
     scaler: GradScaler,
@@ -178,13 +178,15 @@ def train(
     grad_clip_norm: Optional[float] = None,
     log_interval: int = 100,
     progress_bar: Progress | NullProgress = NullProgress(),
-) -> tuple[float, int, int]:
+    extra_tracker_context: Optional[AimObjectDict] = None,
+    extra_best_checkpoint_context: Optional[AimObjectDict] = None,
+) -> Tuple[float, int, int]:
     """Train a model.
 
     Context must be initialized before calling this function.
 
     Returns:
-        tuple[best_val_loss, best_epoch, final_global_step]
+        Tuple of `(best_val_loss, best_epoch, final_global_step)`
     """
     ctx = Context.get()
 
@@ -204,24 +206,26 @@ def train(
             epoch_batches = 0
             if os.environ.get("HSPN_PRECISE_TIMING", False):
                 ctx.sync()
+            if ctx.is_distributed and (set_epoch := getattr(dataloader.sampler, "set_epoch", lambda _: None)):
+                set_epoch(epoch)
             epoch_start_time = time.time()
 
             task = progress_bar.add_task(f"Train Epoch {epoch}", total=len(dataloader))
             accum = grad_accum_steps
             optimizer.zero_grad()
 
-            for i, (branch_in, trunk_in, output) in enumerate(dataloader, start=1):
-                output = output.to(device, non_blocking=False)
+            for i, (*batch,) in enumerate(dataloader, start=1):
+                *inputs, target = batch
+                b_tgt = target.to(device)
 
                 with torch.autocast(device.type, dtype=torch.bfloat16, enabled=enable_amp):
-                    b_in = branch_in.to(device, non_blocking=False)
-                    t_in = trunk_in.to(device, non_blocking=False)
-                    preds = model(b_in, t_in)
-                    del b_in, t_in
-                    loss = torch.nn.functional.mse_loss(preds, output, reduction="mean")
+                    preds = model(*[b_in.to(device) for b_in in inputs])
+                    loss = torch.nn.functional.mse_loss(preds, b_tgt, reduction="mean")
                     loss.mul_(world_size / accum)
 
-                del branch_in, trunk_in
+                for e in inputs:
+                    del e
+                del b_tgt, target
                 scaler.scale(loss.float()).backward()
 
                 if device.type == "mps" and hasattr(scaler, "_scale") and not warned:
@@ -255,12 +259,13 @@ def train(
 
             avg_loss = epoch_total_loss / epoch_batches
             if tracker and ctx.is_main_process:
-                tracker.track(epoch, "epoch", global_step, context={"phase": "train"})
-                tracker.track(epoch_total_loss, "loss", global_step, context={"phase": "train"})
-                tracker.track(avg_loss, "avg_loss", global_step, context={"phase": "train"})
+                log_context = {"phase": "train"} | (extra_tracker_context or {})
+                tracker.track(epoch, "epoch", global_step, context=log_context)
+                tracker.track(epoch_total_loss, "loss", global_step, context=log_context)
+                tracker.track(avg_loss, "avg_loss", global_step, context=log_context)
 
                 current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
-                tracker.track(current_lr, "learning_rate", global_step, context={"phase": "train"})
+                tracker.track(current_lr, "learning_rate", global_step, context=log_context)
 
             progress_bar.remove_task(task)
             ctx.barrier()
@@ -274,33 +279,36 @@ def train(
                 )
 
             # Val set
-            with ctx.model_eval(model):
-                val_loss = evaluate(model, val_dataloader, device)
-                logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
+            val_loss = None
+            if val_dataloader:
+                with ctx.model_eval(model):
+                    val_loss = evaluate(model, val_dataloader, device)
+                    logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
 
-            if ctx.is_main_process:
-                if tracker:
-                    tracker.track(val_loss, "relative_l2_loss", global_step, context={"phase": "val"})
+                if ctx.is_main_process:
+                    if tracker:
+                        log_context = {"phase": "val"} | (extra_tracker_context or {})
+                        tracker.track(val_loss, "relative_l2_loss", global_step, context=log_context)
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_epoch = epoch
-                    logger.info(f"New Best Epoch: {epoch}")
-                    save_checkpoint(
-                        checkpoint_dir / "best_model.pt",
-                        model=model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        gradscaler=scaler,
-                        epoch=epoch,
-                        metrics={
-                            "val_loss": best_val_loss,
-                            "best_val_loss": best_val_loss,
-                            "epoch": epoch,
-                            "global_step": global_step,
-                        },
-                        extra=None,  # Will be passed from main
-                    )
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_epoch = epoch
+                        logger.info(f"New Best Epoch: {epoch}")
+                        save_checkpoint(
+                            checkpoint_dir / "best_model.pt",
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            gradscaler=scaler,
+                            epoch=epoch,
+                            metrics={
+                                "val_loss": best_val_loss,
+                                "best_val_loss": best_val_loss,
+                                "epoch": epoch,
+                                "global_step": global_step,
+                            },
+                            extra=extra_best_checkpoint_context,
+                        )
 
     if _get_ddp_log := getattr(model, "_get_ddp_logging_data", False):
         logger.info("can_set_static_graph=%s", _get_ddp_log().get("can_set_static_graph"))  # type: ignore

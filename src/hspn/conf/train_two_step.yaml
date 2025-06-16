@@ -1,0 +1,117 @@
+#
+# HyperSPIN code - hspn_surrogate_models
+#
+# Copyright 2025 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM25-0396
+#
+
+defaults:
+  - base
+  - _self_
+
+# Basic training options -------------------------------------------------------
+seed: 42
+comm_backend: nccl
+log_interval: 100
+checkpoint_dir: ${hydra:runtime.output_dir}
+
+# Data file paths ---------------------------------------------------------------
+trunk_data: ${oc.env:DATA_DIR,./data}/x_grid.npy
+branch_train_data: ${oc.env:DATA_DIR,./data}/f_train.npy
+output_train_data: ${oc.env:DATA_DIR,./data}/u_train.npy
+
+# Model config ------------------------------------------------------------------
+model:
+  _target_: hspn.model.DeepOperatorNet
+  branch_dim: 1
+  trunk_dim: 3
+  branch_config:
+    width: 100
+    depth: 4
+    activation:
+      _target_: torch.nn.ELU
+  trunk_config:
+    width: 100
+    depth: 5
+    activation:
+      _target_: torch.nn.ReLU
+  latent_dim: 25
+  einsum_pattern: ij,kj->ik
+
+# Trunk training configuration -------------------------------------------------
+trunk_config:
+  n_epochs: 50
+  enable_amp: false
+  grad_accum_steps: 1
+  enable_grad_scaling: false
+  grad_clip_norm: null
+  batch_size: 32
+
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.001
+    weight_decay: 1e-5
+
+  scheduler:
+    _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+    T_max: ${trunk_config.n_epochs}
+    eta_min: 1e-6
+
+  sample_config:
+    seed: 0
+    drop_last: false
+    shuffle: false
+
+# Branch training configuration ------------------------------------------------
+branch_config:
+  n_epochs: 100
+  enable_amp: false
+  grad_accum_steps: 1
+  enable_grad_scaling: false
+  grad_clip_norm: null
+  batch_size: 64
+
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 0.0005
+    weight_decay: 1e-4
+
+  scheduler:
+    _target_: torch.optim.lr_scheduler.StepLR
+    step_size: 30
+    gamma: 0.5
+
+  sample_config:
+    seed: 0
+    drop_last: false
+    shuffle: false
+
+# Optional validation dataloader -----------------------------------------------
+val_dataloader: null
+# val_dataloader:
+#   _target_: torch.utils.data.DataLoader
+#   dataset:
+#     _target_: your.validation.Dataset
+#     # ... dataset parameters
+#   batch_size: 32
+#   shuffle: false
+#   num_workers: 0
+#   pin_memory: true
+
+# Experiment tracking config (optional) ----------------------------------------
+tracker:
+  _target_: aim.Run
+  repo: .
+  experiment: two_step_don_training
+
+# Optional extras ---------------------------------------------------------------
+extra: null
