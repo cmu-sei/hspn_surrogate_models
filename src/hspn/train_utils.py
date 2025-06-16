@@ -145,20 +145,13 @@ def save_checkpoint(
         metrics: Dictionary of metrics to save
         extra: Any extra metadata to save (optional)
     """
-    logger.info("Entering save checkpoint")
-    rank = dist.get_rank() if dist.is_initialized() else 0
     logger.info("Saving checkpoint...")
-
-    if rank != 0:
-        return
     filepath = Path(filepath).resolve()
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Moving model state dict to cpu")
     cpu_sd = {k: v.cpu() for k, v in unwrap(model).state_dict().items()}
 
     def optim_state_to(optim, device="cpu"):
-        logger.info("Moving optim state dict to cpu")
         opt_sd = optim.state_dict()
         cpu_opt_state = {}
         for param_id, param_state in opt_sd["state"].items():
@@ -168,7 +161,6 @@ def save_checkpoint(
         return opt_sd
 
     def sched_state_to(sched, device="cpu"):
-        logger.info("Moving sched state dict to cpu")
         return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in sched.state_dict().items()}
 
     checkpoint = {
@@ -182,7 +174,6 @@ def save_checkpoint(
         "extra": extra,
     }
 
-    logger.info("Saving file")
     torch.save(checkpoint, filepath)
     logger.info(f"Saved checkpoint to {filepath!s}")
 

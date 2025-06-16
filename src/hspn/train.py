@@ -20,9 +20,9 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Literal, Optional, Tuple
 
-from aim.sdk.types import AimObject, AimObjectDict
+from aim.sdk.types import AimObjectDict
 import hydra
 import numpy
 import torch
