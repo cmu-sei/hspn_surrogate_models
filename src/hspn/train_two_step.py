@@ -20,7 +20,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Tuple, Union
 
 import hydra
 import numpy
@@ -44,6 +44,7 @@ from hspn.train_utils import (
     set_log_context,
     wrap_as_distributed,
 )
+import h5py
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +59,119 @@ class TwoStepTrainingState:
     T_inv: Optional[Tensor] = None
     A_target: Optional[Tensor] = None
 
+
+@dataclass(slots=True, frozen=True)
+class DONData:
+    trunk: Tensor
+    branch: Tensor
+    output: Tensor
+
     @classmethod
-    def from_files(cls, trunk_path: Path, branch_train_path: Path, output_train_path: Path) -> "TwoStepTrainingState":
+    def from_h5(
+        cls,
+        file_path: Path,
+        branch_start: Union[int, float],
+        branch_end: Union[int, float],
+        trunk_start: Union[int, float] = 0.0,
+        trunk_end: Union[int, float] = 1.0,
+        dtype: torch.dtype = torch.float32,
+    ):
+        file_path = Path(file_path).resolve()
+
+        logger.info(f"Loading HDF5 dataset from {file_path}")
+        file = h5py.File(file_path, "r", swmr=True)
+
+        branch = file["branch"]
+        assert isinstance(branch, h5py.Dataset)
+
+        trunk = file["trunk"]
+        assert isinstance(trunk, h5py.Dataset)
+
+        output = file["output"]
+        assert isinstance(output, h5py.Dataset)
+
+        trunk_subset, branch_subset, output_subset = cls._subset(
+            branch, trunk, output, branch_start, branch_end, trunk_start, trunk_end, dtype=dtype
+        )
         return cls(
-            x_grid=torch.from_numpy(numpy.load(trunk_path)),
-            F_train=torch.from_numpy(numpy.load(branch_train_path)),
-            U_train=torch.from_numpy(numpy.load(output_train_path)),
+            trunk=trunk_subset,
+            branch=branch_subset,
+            output=output_subset,
+        )
+
+    @classmethod
+    def from_npy(
+        cls,
+        trunk_path: Path,
+        branch_path: Path,
+        output_path: Path,
+        branch_start: Union[int, float],
+        branch_end: Union[int, float],
+        trunk_start: Union[int, float] = 0.0,
+        trunk_end: Union[int, float] = 1.0,
+        dtype: torch.dtype = torch.float32,
+    ) -> "DONData":
+        trunk = numpy.load(trunk_path)
+        branch = numpy.load(branch_path)
+        output = numpy.load(output_path)
+        trunk_subset, branch_subset, output_subset = cls._subset(
+            branch, trunk, output, branch_start, branch_end, trunk_start, trunk_end, dtype=dtype
+        )
+        return cls(
+            trunk=trunk_subset,
+            branch=branch_subset,
+            output=output_subset,
+        )
+
+    @staticmethod
+    def _subset(
+        branch,
+        trunk,
+        output,
+        branch_start: Union[int, float],
+        branch_end: Union[int, float],
+        trunk_start: Union[int, float],
+        trunk_end: Union[int, float],
+        dtype: torch.dtype,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        logger.info(f"Branch={branch.shape} Trunk={trunk.shape} Output={output.shape}")
+        if branch_start <= 1:
+            global_branch_start = int(branch_start * branch.shape[0])
+        else:
+            global_branch_start = branch_start
+            assert isinstance(branch_start, int)
+        if trunk_end <= 1:
+            global_branch_end = int(branch_end * branch.shape[0])
+        else:
+            assert isinstance(branch_end, int)
+            global_branch_end = branch_end
+        branch_n = global_branch_end - global_branch_start
+        assert branch_n > 0, f"Branch start and end indices must be valid ({global_branch_start}, {global_branch_end})"
+
+        if trunk_start <= 1:
+            global_trunk_start = int(trunk_start * trunk.shape[0])
+        else:
+            global_trunk_start = trunk_start
+            assert isinstance(trunk_start, int)
+        if trunk_end <= 1:
+            global_trunk_end = int(trunk_end * trunk.shape[0])
+        else:
+            assert isinstance(trunk_end, int)
+            global_trunk_end = trunk_end
+
+        trunk_n = global_trunk_end - global_trunk_start
+        logger.info(
+            f"Calculated dataset subset: "
+            f"{global_branch_start=} {global_branch_end=} {branch_n=} "
+            f"{trunk_start=} {trunk_end=} {global_trunk_start=} {global_trunk_end=} {trunk_n=}"
+        )
+        assert trunk_n > 0, f"Trunk start and end indices must be valid ({global_trunk_start}, {global_trunk_end})"
+        return (
+            torch.tensor(trunk[global_trunk_start:global_trunk_end], dtype=dtype),
+            torch.tensor(branch[global_branch_start:global_branch_end], dtype=dtype),
+            torch.tensor(
+                output[global_branch_start:global_branch_end, global_trunk_start:global_trunk_end], dtype=dtype
+            ),
         )
 
 
@@ -96,26 +204,17 @@ class TwoStepTrainConfig:
     comm_backend: Literal["nccl", "gloo"]
     log_interval: int
     model: DeepOperatorNet
+    train_dataset: DONData
     val_dataloader: Optional[DataLoader]
     tracker: Optional[Run]
-    trunk_data: Path
-    branch_train_data: Path
-    output_train_data: Path
     trunk_config: StepConfig
     branch_config: StepConfig
     extra: Optional[Any] = None
 
     def __post_init__(self):
         self.checkpoint_dir = Path(self.checkpoint_dir)
-        self.trunk_data = Path(self.trunk_data)
-        self.branch_train_data = Path(self.branch_train_data)
-        self.output_train_data = Path(self.output_train_data)
 
     def validate(self):
-        for path_attr in ["trunk_data", "branch_train_data", "output_train_data"]:
-            path = getattr(self, path_attr)
-            if not path.exists():
-                raise FileNotFoundError(f"Data file not found: {path}")
         for step_name, step_config in [("trunk", self.trunk_config), ("branch", self.branch_config)]:
             if step_config.grad_accum_steps < 1:
                 raise ValueError(
@@ -169,6 +268,7 @@ class TwoStepTrainConfig:
             batch_size=cfg.branch_config.get("batch_size", 32),
             sample_config=SampleConfig(**cfg.branch_config.sample_config),
         )
+        train_dataset = hydra.utils.instantiate(cfg.train_dataset)
         val_dataloader = hydra.utils.instantiate(cfg.val_dataloader) if cfg.get("val_dataloader") else None
         tracker = hydra.utils.instantiate(cfg.tracker) if cfg.get("tracker") and Context.get().is_main_process else None
         self = cls(
@@ -177,11 +277,9 @@ class TwoStepTrainConfig:
             comm_backend=cfg.comm_backend,
             log_interval=cfg.log_interval,
             model=model,
+            train_dataset=train_dataset,
             val_dataloader=val_dataloader,
             tracker=tracker,
-            trunk_data=cfg.trunk_data,
-            branch_train_data=cfg.branch_train_data,
-            output_train_data=cfg.output_train_data,
             trunk_config=trunk_config,
             branch_config=branch_config,
             extra=cfg.get("extra"),
@@ -207,7 +305,7 @@ class BranchAdapter(nn.Module):
 
     def forward(self, f: Tensor) -> Tensor:
         z = self.branch(f)
-        ones = torch.ones(z.shape[0], 1, device=z.device)
+        ones = torch.ones(z.shape[0], 1, skdevice=z.device)
         return torch.cat([z, ones], dim=1)
 
 
@@ -249,7 +347,7 @@ def train_two_step(
     best_trunk_val_loss, best_trunk_epoch, _ = train(
         model=trunk_model,
         dataloader=trunk_loader,
-        val_dataloader=config.val_dataloader,
+        val_dataloader=None,
         optimizer=trunk_optimizer,
         scheduler=config.trunk_config.scheduler,
         scaler=GradScaler(device=device.type, enabled=config.trunk_config.enable_grad_scaling),
@@ -300,7 +398,7 @@ def train_two_step(
     best_branch_val_loss, best_branch_epoch, _ = train(
         model=branch_model,
         dataloader=branch_loader,
-        val_dataloader=config.val_dataloader,
+        val_dataloader=None,
         optimizer=config.branch_config.optimizer,
         scheduler=config.branch_config.scheduler,
         scaler=GradScaler(device=device.type, enabled=config.branch_config.enable_grad_scaling),
@@ -367,6 +465,7 @@ def _main(cfg: DictConfig) -> float:
     start_time = time.time()
     best_trunk_loss = float("inf")
     best_branch_loss = float("inf")
+    config = None
 
     try:
         config = TwoStepTrainConfig.from_cfg(cfg)
@@ -381,10 +480,10 @@ def _main(cfg: DictConfig) -> float:
             model = nn.parallel.DistributedDataParallel(model)
 
         # Load training data
-        state = TwoStepTrainingState.from_files(
-            trunk_path=config.trunk_data,
-            branch_train_path=config.branch_train_data,
-            output_train_path=config.output_train_data,
+        state = TwoStepTrainingState(
+            x_grid=config.train_dataset.trunk,
+            F_train=config.train_dataset.branch,
+            U_train=config.train_dataset.output,
         )
 
         # Setup progress bar
@@ -428,7 +527,7 @@ def _main(cfg: DictConfig) -> float:
             logger.info(f"Best trunk loss: {best_trunk_loss:.6f}")
             logger.info(f"Best branch loss: {best_branch_loss:.6f}")
 
-            if config.tracker:
+            if config and config.tracker:
                 config.tracker.close()
 
     return min(best_trunk_loss, best_branch_loss)

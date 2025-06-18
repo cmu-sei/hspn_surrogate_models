@@ -244,9 +244,9 @@ def train(
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
                     if scheduler:
                         scheduler.step()
+                    optimizer.zero_grad()
                     global_step += 1
                     progress_bar.update(task, advance=1)
 

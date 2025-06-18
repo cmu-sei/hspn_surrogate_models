@@ -25,9 +25,20 @@ log_interval: 100
 checkpoint_dir: ${hydra:runtime.output_dir}
 
 # Data file paths ---------------------------------------------------------------
-trunk_data: ${oc.env:DATA_DIR,./data}/x_grid.npy
-branch_train_data: ${oc.env:DATA_DIR,./data}/f_train.npy
-output_train_data: ${oc.env:DATA_DIR,./data}/u_train.npy
+train_dataset:
+  _target_: hspn.train_two_step.DONData.from_h5
+  file_path: ${oc.env:DATA_DIR,./data}/don_dataset.h5
+  branch_start: 0.0 # integer offset or float 0.0 <= x <= 1.0 for a percentage
+  branch_end: 0.8
+
+# From npy files
+# train_dataset:
+#   _target_: hspn.train_two_step.DONData.from_npy
+#   trunk_path: ${oc.env:DATA_DIR,./data}/x_grid.npy
+#   branch_path: ${oc.env:DATA_DIR,./data}/f_train.npy
+#   output_path: ${oc.env:DATA_DIR,./data}/u_train.npy
+#   branch_start: 0.0 # integer offset or float 0.0 <= x <= 1.0 for a percentage
+#   branch_end: 8.0
 
 # Model config ------------------------------------------------------------------
 model:
@@ -54,7 +65,7 @@ trunk_config:
   grad_accum_steps: 1
   enable_grad_scaling: false
   grad_clip_norm: null
-  batch_size: 32
+  batch_size: 100_000
 
   optimizer:
     _target_: torch.optim.Adam
@@ -78,7 +89,7 @@ branch_config:
   grad_accum_steps: 1
   enable_grad_scaling: false
   grad_clip_norm: null
-  batch_size: 64
+  batch_size: 100_000
 
   optimizer:
     _target_: torch.optim.Adam
@@ -96,16 +107,23 @@ branch_config:
     shuffle: false
 
 # Optional validation dataloader -----------------------------------------------
-val_dataloader: null
-# val_dataloader:
-#   _target_: torch.utils.data.DataLoader
-#   dataset:
-#     _target_: your.validation.Dataset
-#     # ... dataset parameters
-#   batch_size: 32
-#   shuffle: false
-#   num_workers: 0
-#   pin_memory: true
+# val_dataloader: null
+# Ingested by the above model at the end of training, so any dataloader provided
+#   must follow the standard DON batching pattern.
+val_dataloader:
+  _target_: torch.utils.data.DataLoader
+  dataset:
+    _target_: hspn.dataset.H5Dataset
+    file_path: ${oc.env:DATA_DIR,./data}/don_dataset.h5
+    branch_batch_size: null
+    trunk_batch_size: 100_000
+    branch_start: 0.8 # integer offset or float 0.0 <= x <= 1.0 for a percentage
+    branch_end: 1.0
+  batch_size: null # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and already yields batches
+  shuffle: false # Do not change this when using `hspn.dataset.H5Dataset` which is a `torch.utils.data.IterableDataset` and yields batches in a deterministic pattern
+  num_workers: 0
+  pin_memory: true
+  prefetch_factor: null
 
 # Experiment tracking config (optional) ----------------------------------------
 tracker:
