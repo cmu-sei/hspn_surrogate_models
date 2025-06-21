@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional, Union
 
 import h5py
-import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, IterableDataset

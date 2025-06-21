@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class TwoStepTrainingState:
+    """Two step training state."""
+
     x_grid: Tensor
     F_train: Tensor
     U_train: Tensor
@@ -62,6 +64,8 @@ class TwoStepTrainingState:
 
 @dataclass(slots=True, frozen=True)
 class DONData:
+    """Simple dataset loader for two step training."""
+
     trunk: Tensor
     branch: Tensor
     output: Tensor
@@ -186,6 +190,8 @@ class SampleConfig:
 
 @dataclass
 class StepConfig:
+    """Training config for a step of two-step training."""
+
     n_epochs: int
     enable_amp: bool
     grad_accum_steps: int
@@ -199,6 +205,8 @@ class StepConfig:
 
 @dataclass
 class TwoStepTrainConfig:
+    """Main config for two-step training."""
+
     seed: int
     checkpoint_dir: Path
     comm_backend: Literal["nccl", "gloo"]
@@ -289,6 +297,8 @@ class TwoStepTrainConfig:
 
 
 class TrunkAdapter(nn.Module):
+    """Module adapter for trunk training stage in two step."""
+
     def __init__(self, trunk_net: nn.Module, A: Tensor):
         super().__init__()
         self.trunk = trunk_net
@@ -299,6 +309,8 @@ class TrunkAdapter(nn.Module):
 
 
 class BranchAdapter(nn.Module):
+    """Module adapter for branch training stage in two step."""
+
     def __init__(self, branch_net: nn.Module):
         super().__init__()
         self.branch = branch_net

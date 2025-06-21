@@ -1,16 +1,16 @@
 #
 # HyperSPIN code - hspn_surrogate_models
-# 
+#
 # Copyright 2025 Carnegie Mellon University.
-# 
+#
 # NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
-# 
+#
 # Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
-# 
+#
 # [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
-# 
+#
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
-# 
+#
 # DM25-0396
 #
 
@@ -49,11 +49,15 @@ logger = logging.getLogger(__name__)
 
 
 class FormatType(str, Enum):
+    """Output file format"""
+
     HDF5 = "hdf5"
     NETCDF = "netcdf"
 
 
 class NormMethod(str, Enum):
+    """Technique for preprocessing a feature"""
+
     NONE = "none"
     MINMAX = "minmax"
     STANDARD = "standard"
@@ -61,6 +65,8 @@ class NormMethod(str, Enum):
 
 @dataclass
 class NormalizationConfig:
+    """Feature normalization options."""
+
     _target_: str = "hspn.prepare.NormalizationConfig"
     method: NormMethod = NormMethod.NONE
     axis: Optional[int] = None
@@ -68,6 +74,8 @@ class NormalizationConfig:
 
 @dataclass
 class ConversionConfig:
+    """Main file conversion config."""
+
     _target_: str = "hspn.prepare.ConversionConfig"
     format: FormatType = FormatType.HDF5
     data_dir: str = "./data"
@@ -101,16 +109,22 @@ def validate_shapes(branch_data: np.ndarray, trunk_data: np.ndarray, output_data
 
 
 class NoneNormResult(TypedDict):
+    """Result if no normalization was applied."""
+
     data: np.ndarray
 
 
 class MinMaxNormResult(TypedDict):
+    """Result if min-max normalization was applied."""
+
     data: np.ndarray
     min: np.ndarray
     max: np.ndarray
 
 
 class StandardNormResult(TypedDict):
+    """Result if standard normalization was applied."""
+
     data: np.ndarray
     mean: np.ndarray
     std: np.ndarray
