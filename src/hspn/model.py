@@ -17,10 +17,11 @@
 """Deep Operator Network implementation."""
 
 import logging
-from typing import Tuple, TypedDict
+from typing import List, Tuple, TypedDict
 
 import torch
 import torch.nn as nn
+from torch._C import device
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,7 @@ class DeepOperatorNet(nn.Module):
         einsum_pattern: str = "ij,kj->ik",
         adapter_layer: Tuple[int, int] | None = None,
     ):
-        """Initialize the DeepOperatorNet.
-
+        """
         Args:
             branch_dim: Dimension of branch input features
             trunk_dim: Dimension of trunk input features
@@ -88,7 +88,7 @@ class DeepOperatorNet(nn.Module):
         Returns:
             Sequential network module
         """
-        layers = []
+        layers: List[nn.Module] = []
         prev_width = input_dim
         for _ in range(net_config["depth"] - 1):  # We add a final layer
             layers.append(nn.Linear(prev_width, net_config["width"]))
@@ -100,7 +100,7 @@ class DeepOperatorNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         """Initialize network weights."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
@@ -108,7 +108,7 @@ class DeepOperatorNet(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-    def curr_device(self):
+    def curr_device(self) -> device:
         return next(self.parameters()).device
 
     def forward(self, branch_input: torch.Tensor, trunk_input: torch.Tensor) -> torch.Tensor:

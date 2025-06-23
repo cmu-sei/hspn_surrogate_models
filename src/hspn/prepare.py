@@ -22,11 +22,14 @@ over chunking. Chunking might be added back, but can be modified other ways and 
 NB: NetCDF produces some big files.
 
 Usage:
-    python -m hspn.prepare --help
-    python -m hspn.prepare format=HDF5 data_dir=./data
-    python -m hspn.prepare format=HDF5 data_dir=./data  branch_files=[branch.npy]
-    python -m hspn.prepare format=NETCDF data_dir=./data branch_files=[branch.npy]
-    python -m hspn.prepare format=HDF5 data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy]
+
+```bash
+python -m hspn.prepare --help
+python -m hspn.prepare format=HDF5 data_dir=./data
+python -m hspn.prepare format=HDF5 data_dir=./data  branch_files=[branch.npy]
+python -m hspn.prepare format=NETCDF data_dir=./data branch_files=[branch.npy]
+python -m hspn.prepare format=HDF5 data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy]
+```
 
 Note: Default config is prepare.yaml which can also be edited directly if desired.
 """
@@ -36,11 +39,10 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, TypedDict, Union, Tuple
+from typing import List, Optional, Tuple, TypedDict, Union
 
 import h5py
 import hydra
-import netCDF4 as nc  # noqa: N813
 import numpy as np
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
@@ -316,6 +318,8 @@ def create_netcdf_file(
     config: ConversionConfig,
 ) -> None:
     """Create NetCDF file from numpy data with optional normalization."""
+    import netCDF4 as nc
+
     if not validate_shapes(branch_data, trunk_data, output_data):
         raise ValueError("Data shape validation failed")
 

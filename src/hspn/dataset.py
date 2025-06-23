@@ -85,8 +85,8 @@ class H5Dataset(IterableDataset):
         if branch_start <= 1:
             global_branch_start = int(branch_start * branch.shape[0])
         else:
-            global_branch_start = branch_start
             assert isinstance(branch_start, int)
+            global_branch_start = branch_start
         if trunk_end <= 1:
             global_branch_end = int(branch_end * branch.shape[0])
         else:
@@ -98,8 +98,8 @@ class H5Dataset(IterableDataset):
         if trunk_start <= 1:
             global_trunk_start = int(trunk_start * trunk.shape[0])
         else:
-            global_trunk_start = trunk_start
             assert isinstance(trunk_start, int)
+            global_trunk_start = trunk_start
         if trunk_end <= 1:
             global_trunk_end = int(trunk_end * trunk.shape[0])
         else:

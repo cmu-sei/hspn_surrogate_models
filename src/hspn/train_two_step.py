@@ -13,7 +13,7 @@
 #
 # DM25-0396
 #
-
+from __future__ import annotations
 import logging
 import os
 import random
@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional, Tuple, Union
 
+import h5py
 import hydra
 import numpy
 import torch
@@ -31,25 +32,23 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskProgressC
 from torch import GradScaler, Tensor, nn
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data import DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 
+from hspn import install_global_log_context, set_log_context
 from hspn.context import Context
 from hspn.model import DeepOperatorNet
 from hspn.train import evaluate, train
 from hspn.train_utils import (
     NullProgress,
-    install_global_log_context,
+    ProgressT,
     save_checkpoint,
-    set_log_context,
     wrap_as_distributed,
 )
-import h5py
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class TwoStepTrainingState:
     """Two step training state."""
 
@@ -62,7 +61,7 @@ class TwoStepTrainingState:
     A_target: Optional[Tensor] = None
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class DONData:
     """Simple dataset loader for two step training."""
 
@@ -79,7 +78,7 @@ class DONData:
         trunk_start: Union[int, float] = 0.0,
         trunk_end: Union[int, float] = 1.0,
         dtype: torch.dtype = torch.float32,
-    ):
+    ) -> DONData:
         file_path = Path(file_path).resolve()
 
         logger.info(f"Loading HDF5 dataset from {file_path}")
@@ -142,8 +141,8 @@ class DONData:
         if branch_start <= 1:
             global_branch_start = int(branch_start * branch.shape[0])
         else:
-            global_branch_start = branch_start
             assert isinstance(branch_start, int)
+            global_branch_start = branch_start
         if trunk_end <= 1:
             global_branch_end = int(branch_end * branch.shape[0])
         else:
@@ -155,8 +154,8 @@ class DONData:
         if trunk_start <= 1:
             global_trunk_start = int(trunk_start * trunk.shape[0])
         else:
-            global_trunk_start = trunk_start
             assert isinstance(trunk_start, int)
+            global_trunk_start = trunk_start
         if trunk_end <= 1:
             global_trunk_end = int(trunk_end * trunk.shape[0])
         else:
@@ -219,10 +218,10 @@ class TwoStepTrainConfig:
     branch_config: StepConfig
     extra: Optional[Any] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.checkpoint_dir = Path(self.checkpoint_dir)
 
-    def validate(self):
+    def validate(self) -> None:
         for step_name, step_config in [("trunk", self.trunk_config), ("branch", self.branch_config)]:
             if step_config.grad_accum_steps < 1:
                 raise ValueError(
@@ -305,6 +304,7 @@ class TrunkAdapter(nn.Module):
         self.A = A
 
     def forward(self, x: Tensor) -> Tensor:
+        """Trunk forward"""
         return self.trunk(x) @ self.A
 
 
@@ -316,8 +316,9 @@ class BranchAdapter(nn.Module):
         self.branch = branch_net
 
     def forward(self, f: Tensor) -> Tensor:
-        z = self.branch(f)
-        ones = torch.ones(z.shape[0], 1, skdevice=z.device)
+        """Branch forward"""
+        z: Tensor = self.branch(f)
+        ones = torch.ones(z.shape[0], 1, device=z.device)
         return torch.cat([z, ones], dim=1)
 
 
@@ -325,7 +326,7 @@ def train_two_step(
     config: TwoStepTrainConfig,
     state: TwoStepTrainingState,
     device: torch.device,
-    progress_bar: Progress | NullProgress = NullProgress(),
+    progress_bar: ProgressT = NullProgress(),
 ) -> tuple[float, float]:
     ctx = Context.get()
     model = config.model
@@ -487,7 +488,7 @@ def _main(cfg: DictConfig) -> float:
             torch.cuda.set_device(device)
         logger.info(f"Using {device}/{torch.get_device_module(device).device_count()}")
 
-        model = config.model.train().to(device)
+        model: nn.Module = config.model.train().to(device)
         if world_size > 1:
             model = nn.parallel.DistributedDataParallel(model)
 
@@ -499,6 +500,7 @@ def _main(cfg: DictConfig) -> float:
         )
 
         # Setup progress bar
+        progress_bar: ProgressT
         if ctx.is_main_process:
             progress_bar = Progress(
                 "[progress.description]{task.description}",

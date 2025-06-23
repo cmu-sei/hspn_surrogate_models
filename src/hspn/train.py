@@ -22,11 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional, Tuple
 
-from aim.sdk.types import AimObjectDict
 import hydra
 import numpy
 import torch
 from aim import Run
+from aim.sdk.types import AimObjectDict
 from omegaconf import DictConfig
 from omegaconf.omegaconf import OmegaConf
 from rich.progress import (
@@ -41,14 +41,14 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 
+from hspn import install_global_log_context, set_log_context
 from hspn.context import Context
 from hspn.dataset import H5Dataset
 from hspn.train_utils import (
     NullProgress,
-    install_global_log_context,
+    ProgressT,
     load_checkpoint,
     save_checkpoint,
-    set_log_context,
     wrap_as_distributed,
 )
 
@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainConfig:
+    """Training options for standard DON training"""
+
     seed: int
     n_epochs: int
     checkpoint_dir: Path
@@ -74,10 +76,10 @@ class TrainConfig:
     tracker: Optional[Run]
     extra: Optional[Any] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.checkpoint_dir = Path(self.checkpoint_dir)
 
-    def validate(self):
+    def validate(self) -> None:
         """Validate after config is instantiated."""
 
         # Typecheck
@@ -89,6 +91,7 @@ class TrainConfig:
                 return False
 
         for name, field_def in self.__dataclass_fields__.items():
+            assert type(field_def.type) is type
             field_type = field_def.type
             value = getattr(self, name)
 
@@ -177,7 +180,7 @@ def train(
     grad_accum_steps: int = 1,
     grad_clip_norm: Optional[float] = None,
     log_interval: int = 100,
-    progress_bar: Progress | NullProgress = NullProgress(),
+    progress_bar: ProgressT = NullProgress(),
     extra_tracker_context: Optional[AimObjectDict] = None,
     extra_best_checkpoint_context: Optional[AimObjectDict] = None,
 ) -> Tuple[float, int, int]:
@@ -287,7 +290,8 @@ def train(
 
                 if ctx.is_main_process:
                     if tracker:
-                        log_context = {"phase": "val"} | (extra_tracker_context or {})
+                        log_context = extra_tracker_context or {}
+                        log_context["phase"] = "val"
                         tracker.track(val_loss, "relative_l2_loss", global_step, context=log_context)
 
                     if val_loss < best_val_loss:
@@ -392,6 +396,7 @@ def _main(cfg: DictConfig) -> float:
         cfg_dict = OmegaConf.to_container(cfg)
         assert isinstance(cfg_dict, dict)
 
+        progress_bar: ProgressT
         if ctx.is_main_process:
             tracker = config.tracker
             if tracker:

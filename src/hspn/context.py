@@ -24,6 +24,7 @@ from typing import Callable, Optional, ParamSpec, TypeVar
 
 import torch
 import torch.distributed as dist
+from torch.distributed.distributed_c10d import Backend
 from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.nn.parallel import DistributedDataParallel
 
@@ -49,17 +50,16 @@ class Context:
             return
         self._initialized = True
 
+        # single‑process defaults
+        self.rank = 0
+        self.world_size = 1
+        self.backend: Backend | None = None
+        self.local_rank = 0
         if dist.is_available() and dist.is_initialized():
             self.rank = dist.get_rank()
             self.world_size = dist.get_world_size()
             self.backend = dist.get_backend()
             self.local_rank = int(os.environ.get("LOCAL_RANK", self.rank if self.backend == "nccl" else 0))
-        else:
-            # single‑process defaults
-            self.rank = 0
-            self.world_size = 1
-            self.backend = None
-            self.local_rank = 0
 
     @classmethod
     def get(cls) -> "Context":
@@ -121,8 +121,8 @@ class Context:
         def deco(fn: Callable[..., None]) -> Callable[..., None]:
             import inspect
 
-            if (ret := inspect.signature(fn).return_annotation) not in (None, inspect.Signature.empty):
-                raise TypeError(f"Cannot use `on_rank` with a function that returns a value. Got {ret}")
+            if (ret := inspect.signature(fn).return_annotation) not in (None, "None", inspect.Signature.empty):
+                raise TypeError(f"Cannot use `on_rank` with a function that returns a value. Got {repr(ret)}.")
 
             @wraps(fn)
             def wrapped(*args, **kwargs):

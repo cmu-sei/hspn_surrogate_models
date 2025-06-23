@@ -13,8 +13,7 @@
 #
 # DM25-0396
 #
-
-import json
+from __future__ import annotations
 import logging
 import os
 import socket
@@ -22,11 +21,12 @@ from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from pprint import pformat
-from typing import Any, Callable, Dict, Optional, OrderedDict, ParamSpec, TypeVar, Union
+from types import TracebackType
+from typing import Any, Callable, Dict, Optional, OrderedDict, ParamSpec, Protocol, Type, TypeVar, Union
 
 import torch
 import torch.distributed as dist
-import torch.multiprocessing as mp
+from torch.multiprocessing.spawn import spawn
 import torch.nn as nn
 from rich.progress import TaskID
 from torch import GradScaler
@@ -74,7 +74,7 @@ def _get_master_port():
     return port
 
 
-def worker_fn(rank: int, world_size: int, fn, args, kwargs):
+def worker_fn(rank: int, world_size: int, fn, args, kwargs) -> None:
     os.environ["RANK"] = str(rank)
     backend = "gloo"
     if torch.cuda.is_available():
@@ -112,7 +112,7 @@ def wrap_as_distributed(fn: Callable[P, R]):
         os.environ["MASTER_PORT"] = str(master_port)
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         logger.info(f"Spawning {world_size=} processes. {os.environ.get('MASTER_ADDR')}:{master_port}")
-        mp.spawn(
+        spawn(
             worker_fn,
             args=(world_size, fn, args, kwargs),
             nprocs=world_size,
@@ -231,88 +231,60 @@ def unwrap(model: Union[nn.Module, DistributedDataParallel, FullyShardedDataPara
     return getattr(model, "module", model)
 
 
-import logging
-import threading
+class ProgressT(Protocol):
+    """Duck progress bar"""
 
-_log_ctx = threading.local()
+    def __enter__(self) -> "ProgressT": ...
 
+    def __exit__(
+        self,
+        exc_type: Type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...
 
-def set_log_context(**kwargs):
-    for k, v in kwargs.items():
-        setattr(_log_ctx, k, v)
+    def add_task(self, *args, **kwargs) -> TaskID: ...
 
+    def update(self, *args, **kwargs) -> None: ...
 
-def clear_log_context():
-    _log_ctx.__dict__.clear()
+    def remove_task(self, *args, **kwargs) -> None: ...
 
+    def stop(self) -> None: ...
 
-class GlobalLogContextFilter(logging.Filter):
-    def filter(self, record):
-        for attr in ["rank", "world_size", "backend"]:
-            value = getattr(_log_ctx, attr, None)
-            if not hasattr(record, attr):
-                setattr(record, attr, value)
-        return True
+    def start(self) -> None: ...
 
-
-def _patch_formatter(formatter: logging.Formatter):
-    """Patch the formatter to always include rank/world_size/backend placeholders."""
-    base_format = formatter._fmt
-    if not base_format:
-        return
-
-    if "%(rank)" not in base_format and "%(world_size)" not in base_format:
-        formatter._fmt = f"[rank=%(rank)s world_size=%(world_size)s] {base_format}"
-
-    base_format = formatter._style._fmt
-    if not base_format:
-        return
-    if "%(rank)" not in base_format and "%(world_size)" not in base_format:
-        formatter._style._fmt = f"[rank=%(rank)s world_size=%(world_size)s] {base_format}"
-
-
-def install_global_log_context():
-    """Inject context into all log records and patch format strings to include rank info."""
-    root_logger = logging.getLogger()
-    filter_instance = GlobalLogContextFilter()
-
-    for handler in root_logger.handlers:
-        handler.addFilter(filter_instance)
-        if hasattr(handler, "formatter") and handler.formatter:
-            _patch_formatter(handler.formatter)
-
-    _orig_addHandler = logging.Logger.addHandler  # Patch future handlers too
-
-    def _addHandlerWithPatch(self, hdlr):
-        hdlr.addFilter(filter_instance)
-        if hasattr(hdlr, "formatter") and hdlr.formatter:
-            _patch_formatter(hdlr.formatter)
-        _orig_addHandler(self, hdlr)
-
-    logging.Logger.addHandler = _addHandlerWithPatch
+    def advance(self, *args, **kwargs) -> None: ...
 
 
 class NullProgress:
-    def __enter__(self):
+    """No-op progress bar"""
+
+    def __enter__(self) -> NullProgress:
         return self
 
-    def __exit__(self, *args):
-        pass
+    def __exit__(
+        self,
+        exc_type: Type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_val, exc_tb
 
     def add_task(self, *args, **kwargs) -> TaskID:
-        return 0
+        del args, kwargs
+        return TaskID(0)
 
-    def update(self, *args, **kwargs):
+    def update(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def remove_task(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def stop(self) -> None:
         pass
 
-    def remove_task(self, *args, **kwargs):
+    def start(self) -> None:
         pass
 
-    def stop(self):
-        pass
-
-    def start(self):
-        pass
-
-    def advance(self, *args, **kwargs):
-        pass
+    def advance(self, *args, **kwargs) -> None:
+        del args, kwargs
