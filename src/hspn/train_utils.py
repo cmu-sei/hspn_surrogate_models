@@ -268,10 +268,10 @@ class NullProgress:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        del exc_type, exc_val, exc_tb
+        _ = exc_type, exc_val, exc_tb
 
     def add_task(self, *args, **kwargs) -> TaskID:
-        del args, kwargs
+        _ = args, kwargs
         return TaskID(0)
 
     def update(self, *args, **kwargs) -> None:

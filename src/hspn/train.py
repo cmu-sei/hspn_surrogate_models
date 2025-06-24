@@ -20,6 +20,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import typing
 from typing import Any, Literal, Optional, Tuple
 
 import hydra
@@ -91,12 +92,14 @@ class TrainConfig:
                 return False
 
         for name, field_def in self.__dataclass_fields__.items():
-            assert type(field_def.type) is type
+            assert isinstance(field_def.type, typing._Final) or (type(field_def.type) is type), (
+                f"name: {field_def} {field_def.type} {type(field_def.type)}"
+            )
             field_type = field_def.type
             value = getattr(self, name)
 
-            if _runtime_checkable(field_type):
-                if not isinstance(value, field_type):
+            if _runtime_checkable(field_type):  # type: ignore
+                if not isinstance(value, field_type):  # type: ignore
                     raise TypeError(f"Field '{name}' expected {field_type}, got {type(value)}: {value}")
 
         # Cant batch on H5Dataset

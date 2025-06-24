@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "netcdf4>=1.7.2",
+    "pytest>=8.4.1",
+    "pytest-cov>=4.0.0",
     "rq-dashboard>=0.8.2.2",
     "ruff>=0.9.7",
 ]

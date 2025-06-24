@@ -13,10 +13,12 @@
 #
 # DM25-0396
 #
-
+from __future__ import annotations
 import logging
+from multiprocessing import Value
 from pathlib import Path
-from typing import Optional, Union
+from types import TracebackType
+from typing import Optional, Type, Union
 
 import h5py
 import torch
@@ -49,7 +51,7 @@ class H5Dataset(IterableDataset):
         self.world_size = dist.get_world_size() if self.is_distributed else 1
 
         logger.info(f"Loading HDF5 dataset from {self.file_path}")
-        self.file = h5py.File(self.file_path, "r", swmr=True)
+        self.file = h5py.File(self.file_path, "r")
 
         branch = self.file["branch"]
         assert isinstance(branch, h5py.Dataset)
@@ -60,25 +62,41 @@ class H5Dataset(IterableDataset):
         output = self.file["output"]
         assert isinstance(output, h5py.Dataset)
 
-        if branch_batch_size:
-            assert branch_batch_size > 0
+        if isinstance(branch_batch_size, (float, int)):
             if 0 < branch_batch_size < 1:
-                assert isinstance(branch_batch_size, int)
+                assert isinstance(branch_batch_size, float)
                 self.branch_batch_size = int(branch_batch_size * branch.shape[0])
             elif branch_batch_size >= 1:
+                assert isinstance(branch_batch_size, int)
                 self.branch_batch_size = int(branch_batch_size)
-        else:
+            else:
+                raise ValueError(
+                    f"Branch batch size must be a non-negative  float, int, or None got {type(branch_batch_size)} {branch_batch_size!r}"
+                )
+        elif branch_batch_size is None:
             self.branch_batch_size = branch.shape[0]
+        else:
+            raise ValueError(
+                f"Branch batch size must be a non-negative float, int, or None got {type(branch_batch_size)} {branch_batch_size!r}"
+            )
 
-        if trunk_batch_size:
-            assert trunk_batch_size > 0
+        if isinstance(trunk_batch_size, (float, int)):
             if 0 < trunk_batch_size < 1:
+                assert isinstance(branch_batch_size, float)
                 self.trunk_batch_size = int(trunk_batch_size * trunk.shape[0])
             elif trunk_batch_size >= 1:
                 assert isinstance(trunk_batch_size, int)
                 self.trunk_batch_size = trunk_batch_size
-        else:
+            else:
+                raise ValueError(
+                    f"Trunk batch size must be a non-negative float, int, or None got {type(trunk_batch_size)} {trunk_batch_size!r}"
+                )
+        elif trunk_batch_size is None:
             self.trunk_batch_size = trunk.shape[0]
+        else:
+            raise ValueError(
+                f"Trunk batch size must be a non-negative float, int, or None got {type(trunk_batch_size)} {trunk_batch_size!r}"
+            )
 
         logger.info(f"Branch={branch.shape} Trunk={trunk.shape} Output={output.shape}")
 
@@ -227,6 +245,18 @@ class H5Dataset(IterableDataset):
 
     def __del__(self) -> None:
         """Ensure file is closed when object is deleted."""
+        self.close()
+
+    def __enter__(self) -> H5Dataset:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        _ = exc_type, exc_val, exc_tb
         self.close()
 
 
