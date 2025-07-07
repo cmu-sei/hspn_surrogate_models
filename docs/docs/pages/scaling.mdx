@@ -1,0 +1,28 @@
+# Scaling HPO on HPC Clusters
+
+First, build the apptainer image with `make hspn.sif`
+
+Next, parameterize a sweep by editing a configuration file (see `train_hpo*.yaml` for examples)
+
+Finally, launch...
+
+## Launch on PBS
+
+```sh
+ACCT=XXXXXXXX cluster/hpo-pbs.sh
+```
+
+See the PBS launch script for documentation on configuration options.
+
+## Launch on SLURM
+
+```sh
+sbatch --account=XXXXXXXX cluster/hpo.slurm [<args>]
+```
+
+See the SLURM batch script for documentation on configuration options. Args can be passed to the train task as usual e.g.,
+
+
+```sh
+sbatch --account=XXXXXXXX cluster/hpo.slurm comm_backend=gloo n_epochs=100
+```

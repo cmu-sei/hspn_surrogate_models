@@ -182,3 +182,4 @@ cython_debug/
 .aim
 
 justfile
+node_modules

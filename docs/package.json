@@ -1,0 +1,22 @@
+{
+  "name": "site",
+  "scripts": {
+    "export-docs": "python export_mdx.py hspn --out docs/pages/api/hspn.mdx",
+    "build": "bun run export-docs && bunx vocs build",
+    "dev": "bun run export-docs && bunx vocs dev",
+    "preview": "bunx vocs preview",
+    "watch:api-docs": "nodemon --watch 'src/**/*.py' --ext py --exec 'npm run export:docs && npm run build:api-docs'",
+    "clean": "rm -rf docs/public/api/*.json docs/pages/api/*.mdx",
+    "cleanbuildprod": "bun run clean && rm -rf node_modules && bun i --production && bun run build"
+  },
+  "dependencies": {
+    "vocs": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "tsx": "^4.0.0",
+    "nodemon": "^3.0.0",
+    "typescript": "^5.8.3"
+  }
+}

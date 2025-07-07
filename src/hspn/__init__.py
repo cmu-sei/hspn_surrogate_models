@@ -12,7 +12,7 @@
 # This Software includes and/or makes use of Third-Party Software each subject to its own license.
 #
 # DM25-0396
-"""HSPN."""
+"""HyperSPIN."""
 
 import logging
 import threading

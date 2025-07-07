@@ -34,13 +34,10 @@ services:
       - https_proxy=${https_proxy}
       - NO_PROXY=${NO_PROXY}
       - no_proxy=${no_proxy}
-      - HF_HOME=/root/.cache/huggingface
-      - TF_HOME=/root/.cache/tensorflow
       - TERM=xterm-256color
     ipc: host
     network_mode: host
     runtime: nvidia
     volumes:
       - .:/workspace:rw
-      - /srv/cache/tensorflow:/root/.cache/tensorflow:rw
       - /srv/hspn_data/:/srv/hspn_data/:ro

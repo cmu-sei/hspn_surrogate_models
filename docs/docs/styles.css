@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+
+@layer components {
+  .wrap-pre {
+    @apply whitespace-pre-wrap break-words;
+  }
+}
+/* override vocs dark color override */
+:root.dark .my-code-block pre.shiki span:not(.line),
+:root.dark .my-code-block :not(pre.shiki) .line span {
+  all: unset !important;
+  color: unset !important;
+  display: inline !important;
+}

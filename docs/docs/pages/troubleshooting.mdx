@@ -1,0 +1,75 @@
+# Troubleshooting
+
+## `hspn-prepare/train/etc` command not found
+
+`$HOME/.local/bin` must be in your `PATH` to use the script aliases. The scripts can simply be executed directly, more information is available [here](/getting-started#additional-cli-features)
+
+## Apptainer Errors
+
+### Build-time Space Errors
+
+If you encounter a build error such as:
+
+```
+No space left on device
+```
+
+Build in a sandbox with `--sandbox` then convert the sandbox to an image with `apptainer build image.sif image.sif/`
+
+
+For example, instead of
+
+```sh
+# Standard build:
+apptainer build --fakeroot --bind $(pwd):/workspace hspn.sif cluster/hspn.def
+```
+
+Use a sandbox,
+```sh
+# Sandbox build:
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sif/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sif/
+```
+
+To persist the sandbox name it something else:
+
+```sh
+# Persistent sandbox build
+apptainer build --fakeroot --bind "$(pwd):/workspace" --sandbox hspn.sandbox/ cluster/hspn.def
+apptainer build --fakeroot hspn.sif hspn.sandbox/
+```
+
+### Run-time Container Space Errors
+
+If at runtime a service suggest there is no space left it may be writing to a system location that is not a host mount. An example of this is excessive logging to a system location. You have a few options to address this.
+
+*Use a Tmp FS*
+
+Use the `--writable-tmpfs` flag so writes are allowed but discarded on shutdown. This useful if you do not need the data or it is persisted another (e.g. logs that are also written to stdout/stderr persist in a SLURM log file). See [Writable Overlay](https://apptainer.org/docs/user/latest/persistent_overlays.html) for more information.
+
+*Use a Writable Overlay*
+
+Adding a [Writable Overlay](https://apptainer.org/docs/user/latest/persistent_overlays.html) is applicable when you may need to recover the data (e.g. logs) manually and need the image to be mutable.
+
+*Use a mount*
+
+If you know what location is being written to you can start the container with that location as a host mount.
+
+## Optuna Errors
+
+If you encounter an error such as:
+
+```
+ValueError: CategoricalDistribution does not support dynamic value space
+```
+
+This is likely because there is an Optuna DB persisted to disk (e.g., Redis) that already has a study with the same name you are using. You have changed the search space (rather than just resuming the study) and now there is a mismatch.
+
+There are a few ways to address it,
+
+1. Use a different study name either in the config file, at the CLI, or with the environment variable `OPTUNA_STUDY_NAME` which will get passed through to the config which has something like `study_name: ${oc.env:STUDY_NAME}`
+2. Delete the old study
+3. Delete the entire database if you just want to start over (may be at `.redis/` depending on the configuration, check launch script if not)
+4. Dont use the disk-persisted Optuna DB. This feature is optional and not vital to run Optuna sweeps. The example `train_hpo_optuna.yaml` sets `hydra.sweeper.storage=${oc.env:OPTUNA_STORAGE_URL,null}` where `OPTUNA_STORAGE_URL` is set at launch. If this value is `null` then an in-memory store is used and not persisted to disk.
+
+
