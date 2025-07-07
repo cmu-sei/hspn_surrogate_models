@@ -3,6 +3,7 @@ name = "hspn"
 version = "0.1.0"
 description = "deep operator networks for ARL CFD"
 readme = "README.md"
+requires-python = ">=3.11"
 authors = [
   { name = "Marco Christiani", email = "mchristiani@sei.cmu.edu" },
   { name="Jasmine Ratchford", email="jratchford@sei.cmu.edu" },
@@ -19,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "netcdf4>=1.7.2",
+    "psutil>=5.9.0",
     "pytest>=8.4.1",
     "pytest-cov>=4.0.0",
     "rq-dashboard>=0.8.2.2",
@@ -51,5 +53,16 @@ packages = ["src/hspn"]
 [tool.ruff]
 preview = true
 line-length = 120
-ignore = ["N813"]
+lint.ignore = ["N813"]
 lint.dummy-variable-rgx = "^_$"
+
+
+# [tool.mypy]
+# check_untyped_defs = true
+# local_partial_types = true
+#
+# [[tool.mypy.overrides]]
+# module = ["h5py.*"]
+# follow_untyped_imports = true
+# module = ["h5py.*"]
+# ignore_missing_imports = true
