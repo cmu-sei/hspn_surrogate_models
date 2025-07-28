@@ -2,7 +2,8 @@ import { defineConfig } from 'vocs'
 
 export default defineConfig({
   title: 'HSPN',
-  base: '/hspn_surrogate_models/',
+  basePath: '/hspn_surrogate_models/',
+  baseUrl: 'https://cmu-sei.github.io/hspn_surrogate_models/',
   sidebar: [
     {
       text: 'Getting Started',
@@ -17,8 +18,8 @@ export default defineConfig({
       link: '/troubleshooting'
     },
     {
-        text: 'API Reference',
-        link: '/api/hspn'
+      text: 'API Reference',
+      link: '/api/hspn'
     },
   ]
 })
