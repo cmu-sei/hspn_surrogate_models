@@ -1,0 +1,2131 @@
+---
+title: hspn API reference
+description: HyperSPIN.
+showOutline: 5
+---
+
+## hspn
+
+
+HyperSPIN.
+
+### set_log_context
+
+```python
+set_log_context(kwargs) -> None
+```
+Set shared log context
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def set_log_context(**kwargs) -> None:
+    """Set shared log context"""
+    for k, v in kwargs.items():
+        setattr(_log_ctx, k, v)
+```
+</details>
+
+### clear_log_context
+
+```python
+clear_log_context() -> None
+```
+Reset log context state.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def clear_log_context() -> None:
+    """Reset log context state."""
+    _log_ctx.__dict__.clear()
+```
+</details>
+
+### GlobalLogContextFilter
+
+
+Filter to inject context into logs.
+
+#### filter
+
+```python
+filter(self, record: LogRecord) -> bool
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def filter(self, record: logging.LogRecord) -> bool:
+    for attr in ["rank", "world_size", "backend"]:
+        value = getattr(_log_ctx, attr, None)
+        if not hasattr(record, attr):
+            setattr(record, attr, value)
+    return True
+```
+</details>
+
+### install_global_log_context
+
+```python
+install_global_log_context() -> None
+```
+Inject context into all log records and patch format strings to include rank info.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def install_global_log_context() -> None:
+    """Inject context into all log records and patch format strings to include rank info."""
+    root_logger = logging.getLogger()
+    filter_instance = GlobalLogContextFilter()
+
+    for handler in root_logger.handlers:
+        handler.addFilter(filter_instance)
+        if hasattr(handler, "formatter") and handler.formatter:
+            _patch_formatter(handler.formatter)
+
+    _orig_addHandler = logging.Logger.addHandler  # Patch future handlers too
+
+    def _addHandlerWithPatch(self, hdlr):
+        hdlr.addFilter(filter_instance)
+        if hasattr(hdlr, "formatter") and hdlr.formatter:
+            _patch_formatter(hdlr.formatter)
+        _orig_addHandler(self, hdlr)
+
+    setattr(logging.Logger, "addHandler", _addHandlerWithPatch)
+```
+</details>
+
+## train_utils
+
+
+### worker_fn
+
+```python
+worker_fn(rank: int, world_size: int, fn, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def worker_fn(rank: int, world_size: int, fn, args, kwargs) -> None:
+    os.environ["RANK"] = str(rank)
+    backend = "gloo"
+    if torch.cuda.is_available():
+        backend = "nccl"
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        if cvd and len(cvd.split(",")) == 1:
+            logger.info(f'Found CUDA_VISIBLE_DEVICES="{cvd}" skipping `torch.cuda.set_device`')
+        else:
+            logger.info(f'Found CUDA_VISIBLE_DEVICES="{cvd}" setting `torch.cuda.set_device({rank})`')
+            torch.cuda.set_device(rank)
+    logger.info(f"Initializing process group {backend=} {rank=} {world_size=}")
+    dist.init_process_group(backend=backend, init_method="env://", rank=rank, world_size=world_size)
+    try:
+        res = fn(*args, **kwargs)
+        logger.info(f"returned from func w value {res} shutting down")
+    finally:
+        dist.destroy_process_group()
+```
+</details>
+
+### wrap_as_distributed
+
+```python
+wrap_as_distributed(fn: Callable)
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def wrap_as_distributed(fn: Callable[P, R]):
+    @wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs):
+        if torch.cuda.is_available():
+            world_size = torch.cuda.device_count()
+        else:
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+        if world_size <= 1:
+            logger.info("Running without distributed.")
+            fn(*args, **kwargs)
+            return
+
+        master_port = _get_master_port()
+        os.environ["WORLD_SIZE"] = str(world_size)
+        os.environ["MASTER_PORT"] = str(master_port)
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        logger.info(f"Spawning {world_size=} processes. {os.environ.get('MASTER_ADDR')}:{master_port}")
+        spawn(
+            worker_fn,
+            args=(world_size, fn, args, kwargs),
+            nprocs=world_size,
+            join=True,
+        )
+
+    return wrapper
+```
+</details>
+
+### save_checkpoint
+
+```python
+save_checkpoint(filepath: Union, model: Module, optimizer: Optimizer, scheduler: Optional, gradscaler: Optional, epoch: int, metrics: Dict, extra: Optional) -> None
+```
+Save model checkpoint.
+
+**Parameters**
+
+  - **filepath**: Path to save the checkpoint
+  - **model**: Model to save, will be heuristically unwrapped
+  - **optimizer**: Optimizer state to save
+  - **scheduler**: Learning rate scheduler to save (optional)
+  - **gradscaler**: `torch.GradScaler` to save (optional)
+  - **epoch**: Current epoch number
+  - **metrics**: Dictionary of metrics to save
+  - **extra**: Any extra metadata to save (optional)
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@Context.on_rank(0)
+def save_checkpoint(
+    filepath: Union[str, Path],
+    model: nn.Module,
+    optimizer: Optimizer,
+    scheduler: Optional[Any],
+    gradscaler: Optional[GradScaler],
+    epoch: int,
+    metrics: Dict[str, float],
+    extra: Optional[Dict] = None,
+) -> None:
+    """Save model checkpoint.
+
+    Args:
+        filepath: Path to save the checkpoint
+        model: Model to save, will be heuristically unwrapped
+        optimizer: Optimizer state to save
+        scheduler: Learning rate scheduler to save (optional)
+        gradscaler: `torch.GradScaler` to save (optional)
+        epoch: Current epoch number
+        metrics: Dictionary of metrics to save
+        extra: Any extra metadata to save (optional)
+    """
+    logger.info("Saving checkpoint...")
+    filepath = Path(filepath).resolve()
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    cpu_sd = {k: v.cpu() for k, v in unwrap(model).state_dict().items()}
+
+    def optim_state_to(optim, device="cpu"):
+        opt_sd = optim.state_dict()
+        cpu_opt_state = {}
+        for param_id, param_state in opt_sd["state"].items():
+            cpu_opt_state[param_id] = {
+                k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in param_state.items()
+            }
+        return opt_sd
+
+    def sched_state_to(sched, device="cpu"):
+        return {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in sched.state_dict().items()}
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": cpu_sd,
+        "optimizer_state_dict": optim_state_to(optimizer) if optimizer else None,
+        "scheduler_state_dict": sched_state_to(scheduler) if scheduler else None,
+        "gradscaler_state_dict": sched_state_to(gradscaler) if gradscaler else None,
+        "metrics": metrics,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "extra": extra,
+    }
+
+    torch.save(checkpoint, filepath)
+    logger.info(f"Saved checkpoint to {filepath!s}")
+```
+</details>
+
+### load_checkpoint
+
+```python
+load_checkpoint(filepath: Union, model: Optional, optimizer: Optional, scheduler: Optional, gradscaler: Optional, map_location: Union) -> Dict[str, Any]
+```
+Load model checkpoint.
+
+**Parameters**
+
+  - **filename**: Path to checkpoint file
+  - **model**: Model to load weights into (optional)
+  - **optimizer**: Optimizer to load state into (optional)
+  - **scheduler**: Learning rate scheduler to load state into (optional)
+  - **gradscaler**: GradScaler to load state into (optional)
+  - **map_location**: Device to map tensors to
+
+**Returns**
+
+  Dictionary containing checkpoint data
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def load_checkpoint(
+    filepath: Union[str, Path],
+    model: Optional[nn.Module] = None,
+    optimizer: Optional[Optimizer] = None,
+    scheduler: Optional[Any] = None,
+    gradscaler: Optional[GradScaler] = None,
+    map_location: Union[str, torch.device, None] = None,
+) -> Dict[str, Any]:
+    """Load model checkpoint.
+
+    Args:
+        filename: Path to checkpoint file
+        model: Model to load weights into (optional)
+        optimizer: Optimizer to load state into (optional)
+        scheduler: Learning rate scheduler to load state into (optional)
+        gradscaler: GradScaler to load state into (optional)
+        map_location: Device to map tensors to
+
+    Returns:
+        Dictionary containing checkpoint data
+    """
+    logger.info(f"Loading checkpoint from {filepath!s}")
+
+    checkpoint = torch.load(filepath, map_location=map_location, weights_only=True)
+    logger.info("Loaded checkpoint")
+    for k, v in checkpoint.items():
+        if "state" in k or isinstance(v, (OrderedDict, torch.Tensor)):
+            continue
+        logger.info(f"\t{k}: {pformat(v)}")
+
+    if model is not None:
+        logger.info("Loading model state")
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        logger.info("Loading optimizer state")
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        logger.info("Loading scheduler state")
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    if gradscaler is not None and "gradscaler_state_dict" in checkpoint:
+        logger.info("Loading gradscaler state")
+        gradscaler.load_state_dict(checkpoint["gradscaler_state_dict"])
+
+    return checkpoint
+```
+</details>
+
+### unwrap
+
+```python
+unwrap(model: Union) -> nn.Module
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def unwrap(model: Union[nn.Module, DistributedDataParallel, FullyShardedDataParallel]) -> nn.Module:
+    return getattr(model, "module", model)
+```
+</details>
+
+### ProgressT
+
+
+Duck progress bar
+
+#### add_task
+
+```python
+add_task(self, args, kwargs) -> TaskID
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def add_task(self, *args, **kwargs) -> TaskID: ...
+```
+</details>
+
+#### update
+
+```python
+update(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def update(self, *args, **kwargs) -> None: ...
+```
+</details>
+
+#### remove_task
+
+```python
+remove_task(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def remove_task(self, *args, **kwargs) -> None: ...
+```
+</details>
+
+#### stop
+
+```python
+stop(self) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def stop(self) -> None: ...
+```
+</details>
+
+#### start
+
+```python
+start(self) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def start(self) -> None: ...
+```
+</details>
+
+#### advance
+
+```python
+advance(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def advance(self, *args, **kwargs) -> None: ...
+```
+</details>
+
+### NullProgress
+
+
+No-op progress bar
+
+#### add_task
+
+```python
+add_task(self, args, kwargs) -> TaskID
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def add_task(self, *args, **kwargs) -> TaskID:
+    _ = args, kwargs
+    return TaskID(0)
+```
+</details>
+
+#### update
+
+```python
+update(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def update(self, *args, **kwargs) -> None:
+    del args, kwargs
+```
+</details>
+
+#### remove_task
+
+```python
+remove_task(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def remove_task(self, *args, **kwargs) -> None:
+    del args, kwargs
+```
+</details>
+
+#### stop
+
+```python
+stop(self) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def stop(self) -> None:
+    pass
+```
+</details>
+
+#### start
+
+```python
+start(self) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def start(self) -> None:
+    pass
+```
+</details>
+
+#### advance
+
+```python
+advance(self, args, kwargs) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def advance(self, *args, **kwargs) -> None:
+    del args, kwargs
+```
+</details>
+
+## train_two_step
+
+
+### TwoStepTrainingState
+
+
+Two step training state.
+
+### DONData
+
+
+Simple dataset loader for two step training.
+
+#### from_h5
+
+```python
+from_h5(cls, file_path: Path, branch_start: Union, branch_end: Union, trunk_start: Union, trunk_end: Union, dtype: dtype) -> DONData
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def from_h5(
+    cls,
+    file_path: Path,
+    branch_start: Union[int, float],
+    branch_end: Union[int, float],
+    trunk_start: Union[int, float] = 0.0,
+    trunk_end: Union[int, float] = 1.0,
+    dtype: torch.dtype = torch.float32,
+) -> DONData:
+    file_path = Path(file_path).resolve()
+
+    logger.info(f"Loading HDF5 dataset from {file_path}")
+    file = h5py.File(file_path, "r", swmr=True)
+
+    branch = file["branch"]
+    assert isinstance(branch, h5py.Dataset)
+
+    trunk = file["trunk"]
+    assert isinstance(trunk, h5py.Dataset)
+
+    output = file["output"]
+    assert isinstance(output, h5py.Dataset)
+
+    trunk_subset, branch_subset, output_subset = cls._subset(
+        branch, trunk, output, branch_start, branch_end, trunk_start, trunk_end, dtype=dtype
+    )
+    return cls(
+        trunk=trunk_subset,
+        branch=branch_subset,
+        output=output_subset,
+    )
+```
+</details>
+
+#### from_npy
+
+```python
+from_npy(cls, trunk_path: Path, branch_path: Path, output_path: Path, branch_start: Union, branch_end: Union, trunk_start: Union, trunk_end: Union, dtype: dtype) -> 'DONData'
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def from_npy(
+    cls,
+    trunk_path: Path,
+    branch_path: Path,
+    output_path: Path,
+    branch_start: Union[int, float],
+    branch_end: Union[int, float],
+    trunk_start: Union[int, float] = 0.0,
+    trunk_end: Union[int, float] = 1.0,
+    dtype: torch.dtype = torch.float32,
+) -> "DONData":
+    trunk = numpy.load(trunk_path)
+    branch = numpy.load(branch_path)
+    output = numpy.load(output_path)
+    trunk_subset, branch_subset, output_subset = cls._subset(
+        branch, trunk, output, branch_start, branch_end, trunk_start, trunk_end, dtype=dtype
+    )
+    return cls(
+        trunk=trunk_subset,
+        branch=branch_subset,
+        output=output_subset,
+    )
+```
+</details>
+
+### SampleConfig
+
+
+Optional sampling behavior
+
+### StepConfig
+
+
+Training config for a step of two-step training.
+
+### TwoStepTrainConfig
+
+
+Main config for two-step training.
+
+#### validate
+
+```python
+validate(self) -> None
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def validate(self) -> None:
+    for step_name, step_config in [("trunk", self.trunk_config), ("branch", self.branch_config)]:
+        if step_config.grad_accum_steps < 1:
+            raise ValueError(
+                f"Invalid {step_name}_config.grad_accum_steps={step_config.grad_accum_steps}. Must be >= 1."
+            )
+        if step_config.n_epochs < 1:
+            raise ValueError(f"Invalid {step_name}_config.n_epochs={step_config.n_epochs}. Must be >= 1.")
+        if step_config.batch_size < 1:
+            raise ValueError(f"Invalid {step_name}_config.batch_size={step_config.batch_size}. Must be >= 1.")
+```
+</details>
+
+#### from_cfg
+
+```python
+from_cfg(cls, cfg: DictConfig) -> 'TwoStepTrainConfig'
+```
+Instantiate from a `DictConfig` with dependency injection.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def from_cfg(cls, cfg: DictConfig) -> "TwoStepTrainConfig":
+    """Instantiate from a `DictConfig` with dependency injection."""
+
+    model: DeepOperatorNet = hydra.utils.instantiate(cfg.model)
+    trunk_optimizer: Optimizer = hydra.utils.instantiate(
+        cfg.trunk_config.optimizer, params=model.trunk_net.parameters()
+    )
+    trunk_scheduler = (
+        hydra.utils.instantiate(cfg.trunk_config.scheduler, optimizer=trunk_optimizer)
+        if cfg.trunk_config.get("scheduler")
+        else None
+    )
+    trunk_config = StepConfig(
+        n_epochs=cfg.trunk_config.n_epochs,
+        enable_amp=cfg.trunk_config.enable_amp,
+        grad_accum_steps=cfg.trunk_config.grad_accum_steps,
+        enable_grad_scaling=cfg.trunk_config.enable_grad_scaling,
+        grad_clip_norm=cfg.trunk_config.get("grad_clip_norm"),
+        optimizer=trunk_optimizer,
+        scheduler=trunk_scheduler,
+        batch_size=cfg.trunk_config.get("batch_size", 32),
+        sample_config=SampleConfig(**cfg.trunk_config.sample_config),
+    )
+    branch_optimizer: Optimizer = hydra.utils.instantiate(
+        cfg.branch_config.optimizer, params=model.branch_net.parameters()
+    )
+    branch_scheduler = (
+        hydra.utils.instantiate(cfg.branch_config.scheduler, optimizer=branch_optimizer)
+        if cfg.branch_config.get("scheduler")
+        else None
+    )
+    branch_config = StepConfig(
+        n_epochs=cfg.branch_config.n_epochs,
+        enable_amp=cfg.branch_config.enable_amp,
+        grad_accum_steps=cfg.branch_config.grad_accum_steps,
+        enable_grad_scaling=cfg.branch_config.enable_grad_scaling,
+        grad_clip_norm=cfg.branch_config.get("grad_clip_norm"),
+        optimizer=branch_optimizer,
+        scheduler=branch_scheduler,
+        batch_size=cfg.branch_config.get("batch_size", 32),
+        sample_config=SampleConfig(**cfg.branch_config.sample_config),
+    )
+    train_dataset = hydra.utils.instantiate(cfg.train_dataset)
+    val_dataloader = hydra.utils.instantiate(cfg.val_dataloader) if cfg.get("val_dataloader") else None
+    tracker = hydra.utils.instantiate(cfg.tracker) if cfg.get("tracker") and Context.get().is_main_process else None
+    self = cls(
+        seed=cfg.seed,
+        checkpoint_dir=cfg.checkpoint_dir,
+        comm_backend=cfg.comm_backend,
+        log_interval=cfg.log_interval,
+        model=model,
+        train_dataset=train_dataset,
+        val_dataloader=val_dataloader,
+        tracker=tracker,
+        trunk_config=trunk_config,
+        branch_config=branch_config,
+        extra=cfg.get("extra"),
+    )
+    self.validate()
+    return self
+```
+</details>
+
+### TrunkAdapter
+
+
+Module adapter for trunk training stage in two step.
+
+#### forward
+
+```python
+forward(self, x: Tensor) -> Tensor
+```
+Trunk forward
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def forward(self, x: Tensor) -> Tensor:
+    """Trunk forward"""
+    return self.trunk(x) @ self.A
+```
+</details>
+
+### BranchAdapter
+
+
+Module adapter for branch training stage in two step.
+
+#### forward
+
+```python
+forward(self, f: Tensor) -> Tensor
+```
+Branch forward
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def forward(self, f: Tensor) -> Tensor:
+    """Branch forward"""
+    z: Tensor = self.branch(f)
+    ones = torch.ones(z.shape[0], 1, device=z.device)
+    return torch.cat([z, ones], dim=1)
+```
+</details>
+
+### train_two_step
+
+```python
+train_two_step(config: TwoStepTrainConfig, state: TwoStepTrainingState, device: device, progress_bar: ProgressT) -> tuple[float, float]
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def train_two_step(
+    config: TwoStepTrainConfig,
+    state: TwoStepTrainingState,
+    device: torch.device,
+    progress_bar: ProgressT = NullProgress(),
+) -> tuple[float, float]:
+    ctx = Context.get()
+    model = config.model
+
+    A = torch.nn.Parameter(torch.randn((model.latent_dim, state.U_train.shape[0]), device=device))
+    state.A = A
+
+    trunk_model = TrunkAdapter(model.trunk_net, A)
+    trunk_optimizer = config.trunk_config.optimizer.__class__(
+        list(model.trunk_net.parameters()) + [A], **config.trunk_config.optimizer.defaults
+    )
+
+    trunk_ds = TensorDataset(state.x_grid, state.U_train.T)
+    sampler = None
+    shuffle = config.trunk_config.sample_config.shuffle
+    if ctx.is_distributed:
+        sampler = DistributedSampler(
+            trunk_ds,
+            shuffle=shuffle,
+            seed=config.trunk_config.sample_config.seed,
+            drop_last=config.trunk_config.sample_config.drop_last,
+        )
+
+    trunk_loader = DataLoader(
+        trunk_ds,
+        batch_size=config.trunk_config.batch_size,
+        sampler=sampler,
+        shuffle=shuffle and (sampler is None),
+        pin_memory=torch.cuda.is_available(),
+    )
+    best_trunk_val_loss, best_trunk_epoch, _ = train(
+        model=trunk_model,
+        dataloader=trunk_loader,
+        val_dataloader=None,
+        optimizer=trunk_optimizer,
+        scheduler=config.trunk_config.scheduler,
+        scaler=GradScaler(device=device.type, enabled=config.trunk_config.enable_grad_scaling),
+        tracker=config.tracker,
+        checkpoint_dir=config.checkpoint_dir / "trunk",
+        n_epochs=config.trunk_config.n_epochs,
+        device=device,
+        enable_amp=config.trunk_config.enable_amp,
+        grad_accum_steps=config.trunk_config.grad_accum_steps,
+        grad_clip_norm=config.trunk_config.grad_clip_norm,
+        log_interval=config.log_interval,
+        progress_bar=progress_bar,
+        extra_tracker_context={"two_step_phase": "train_trunk"},
+    )
+
+    with torch.no_grad():
+        trunk_out = model.trunk_net(state.x_grid.to(device))
+        bias_col = torch.ones(trunk_out.shape[0], 1, device=device)
+        trunk_out_with_bias = torch.cat([trunk_out, bias_col], dim=1)
+        _, r_mat = torch.linalg.qr(trunk_out_with_bias, mode="reduced")
+        T_inv: Tensor = torch.linalg.inv(r_mat)
+        A_st: Tensor = torch.linalg.lstsq(trunk_out_with_bias, state.U_train.T).solution
+        A_target: Tensor = r_mat @ A_st
+        state.trunk_out_with_bias = trunk_out_with_bias
+        state.T_inv = T_inv
+        state.A_target = A_target.T
+
+    branch_model = BranchAdapter(model.branch_net)
+
+    sampler = None
+    shuffle = config.branch_config.sample_config.shuffle
+    if ctx.is_distributed:
+        sampler = DistributedSampler(
+            trunk_ds,
+            shuffle=shuffle,
+            seed=config.branch_config.sample_config.seed,
+            drop_last=config.branch_config.sample_config.drop_last,
+        )
+
+    branch_ds = TensorDataset(state.F_train, state.A_target)
+    branch_loader = DataLoader(
+        branch_ds,
+        batch_size=config.branch_config.batch_size,
+        sampler=sampler,
+        shuffle=shuffle and (sampler is None),
+        pin_memory=torch.cuda.is_available(),
+    )
+    best_branch_val_loss, best_branch_epoch, _ = train(
+        model=branch_model,
+        dataloader=branch_loader,
+        val_dataloader=None,
+        optimizer=config.branch_config.optimizer,
+        scheduler=config.branch_config.scheduler,
+        scaler=GradScaler(device=device.type, enabled=config.branch_config.enable_grad_scaling),
+        tracker=config.tracker,
+        checkpoint_dir=config.checkpoint_dir / "branch",
+        n_epochs=config.branch_config.n_epochs,
+        device=device,
+        enable_amp=config.branch_config.enable_amp,
+        grad_accum_steps=config.branch_config.grad_accum_steps,
+        grad_clip_norm=config.branch_config.grad_clip_norm,
+        log_interval=config.log_interval,
+        progress_bar=progress_bar,
+        extra_tracker_context={"two_step_phase": "train_branch"},
+    )
+
+    if ctx.is_main_process:
+        save_checkpoint(
+            config.checkpoint_dir / "two_step_final.pt",
+            model=model,
+            optimizer=config.branch_config.optimizer,
+            scheduler=config.branch_config.scheduler,
+            gradscaler=GradScaler(device=device.type, enabled=config.branch_config.enable_grad_scaling),
+            epoch=config.branch_config.n_epochs,
+            metrics={
+                "trunk_val_loss": best_trunk_val_loss,
+                "branch_val_loss": best_branch_val_loss,
+                "trunk_epoch": best_trunk_epoch,
+                "branch_epoch": best_branch_epoch,
+            },
+            extra={"training_method": "two_step", "T_inv": state.T_inv.cpu() if state.T_inv is not None else None},
+        )
+
+    return best_trunk_val_loss, best_branch_val_loss
+```
+</details>
+
+## model
+
+
+Deep Operator Network implementation.
+
+### NetworkSpec
+
+
+Subnet specification.
+
+### DeepOperatorNet
+
+
+DON model implementation.
+
+This model consists of:
+1. A branch network that processes branch/parameter inputs
+2. A trunk network that processes trunk/spatial inputs
+3. An output layer that combines branch and trunk features using einsum
+
+#### curr_device
+
+```python
+curr_device(self) -> device
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def curr_device(self) -> device:
+    return next(self.parameters()).device
+```
+</details>
+
+#### forward
+
+```python
+forward(self, branch_input: Tensor, trunk_input: Tensor) -> torch.Tensor
+```
+Forward pass. Inputs must be on the correct device.
+
+**Parameters**
+
+  - **branch_input**: Tensor of shape (branch_batch_size, branch_dim)
+  - **trunk_input**: Tensor of shape (trunk_batch_size, trunk_dim)
+
+**Returns**
+
+  Tensor of shape (branch_batch_size, trunk_batch_size)
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def forward(self, branch_input: torch.Tensor, trunk_input: torch.Tensor) -> torch.Tensor:
+    """Forward pass. Inputs must be on the correct device.
+
+    Args:
+        branch_input: Tensor of shape (branch_batch_size, branch_dim)
+        trunk_input: Tensor of shape (trunk_batch_size, trunk_dim)
+
+    Returns:
+        Tensor of shape (branch_batch_size, trunk_batch_size)
+    """
+
+    # logger.info(f"{trunk_input.shape=}")
+    # logger.info(f"{branch_input.shape=}")
+    branch_output = self.branch_net(branch_input)  # (branch_bs, branch_dim) -> (branch_bs, latent_dim)
+    trunk_output = self.trunk_net(trunk_input)  # [trunk_bs, trunk_dim] -> (trunk_bs, latent_dim)
+    # logger.info(f"{branch_output.shape=}")
+    # logger.info(f"{trunk_output.shape=}")
+    return torch.einsum(
+        self.einsum_pattern,  # e.g. "ij, kj-> ik"
+        branch_output,
+        trunk_output,
+    )  # (branch_bs, trunk_bs)
+```
+</details>
+
+#### training_step
+
+```python
+training_step(self, batch: Tuple, batch_idx: int) -> torch.Tensor
+```
+Forward pass and compute loss.
+
+This method doesn't really "train" anything, we adopt this convention from torch lightning.
+
+**Parameters**
+
+  - **batch**: Branch input, trunk input, output
+Branch shape is (branch_batch_size, branch_dim)
+Trunk shape is (trunk_batch_size, trunk_dim)
+Output shape is (branch_batch_size, trunk_batch_size)
+  - **batch_idx**: Tensor of shape (branch_batch_size, branch_dim)
+
+**Returns**
+
+  Computed loss
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
+    """Forward pass and compute loss.
+
+    This method doesn't really "train" anything, we adopt this convention from torch lightning.
+
+    Args:
+        batch: Branch input, trunk input, output
+            Branch shape is (branch_batch_size, branch_dim)
+            Trunk shape is (trunk_batch_size, trunk_dim)
+            Output shape is (branch_batch_size, trunk_batch_size)
+        batch_idx: Tensor of shape (branch_batch_size, branch_dim)
+
+    Returns:
+        Computed loss
+    """
+    # logger.info(f"{batch[-1].shape=}")
+    del batch_idx
+    preds = self.forward(batch[0], batch[1])
+    loss = torch.nn.functional.mse_loss(preds, batch[2], reduction="mean")
+    return loss
+```
+</details>
+
+#### approx_size
+
+```python
+approx_size(self, dtype_size_bytes: int) -> Tuple[float, float, float]
+```
+Estimate mode size in GB.
+
+**Parameters**
+
+  - **dtype_size_bytes**: Number of bytes per parameter element (default 4 for float32).
+            Use 2 for float16, 1 for int8, etc.
+
+**Returns**
+
+  Approximate model size in gibibytes for branch, trunk, and total.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def approx_size(self, dtype_size_bytes: int = 4) -> Tuple[float, float, float]:
+    """Estimate mode size in GB.
+
+    Args:
+        dtype_size_bytes: Number of bytes per parameter element (default 4 for float32).
+                        Use 2 for float16, 1 for int8, etc.
+
+    Returns:
+        Approximate model size in gibibytes for branch, trunk, and total.
+    """
+
+    def estimate(model: nn.Module):
+        total_params = sum(p.numel() for p in model.parameters())
+        total_buffers = sum(b.numel() for b in model.buffers())
+        total_elements = total_params + total_buffers
+        total_bytes = total_elements * dtype_size_bytes
+        return total_bytes / (1024**3)
+
+    b = estimate(self.branch_net)
+    t = estimate(self.trunk_net)
+    return (b, t, b + t)
+```
+</details>
+
+## dataset
+
+
+### H5Dataset
+
+
+Yields batches of an HDF5 dataset deterministically traversing a Cartesian grid.
+
+#### close
+
+```python
+close(self) -> None
+```
+Close the data file.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def close(self) -> None:
+    """Close the data file."""
+    if hasattr(self, "file") and self.file is not None:
+        self.file.close()
+```
+</details>
+
+### build_dataloader
+
+```python
+build_dataloader(file_path: Path, batch_branch_size: int, batch_trunk_size: int, num_workers: int, prefetch_factor: Optional, pin_memory: bool, persistent_workers: bool) -> DataLoader
+```
+Create a DataLoader with specialized batching pattern.
+
+**Parameters**
+
+  - **file_path**: Path to the HDF5 data file
+  - **batch_branch_size**: Number of branch samples per batch
+  - **batch_trunk_size**: Number of trunk samples per batch
+  - **num_workers**: Number of DataLoader workers
+  - **prefetch_factor**: Prefetch factor for DataLoader
+  - **pin_memory**: Whether to pin memory for DataLoader
+  - **persistent_workers**: Whether to use persistent workers for DataLoader
+
+**Returns**
+
+  Configured DataLoader.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def build_dataloader(
+    file_path: Path,
+    batch_branch_size: int = 5,
+    batch_trunk_size: int = 10,
+    num_workers: int = 0,
+    prefetch_factor: Optional[int] = None,
+    pin_memory: bool = True,
+    persistent_workers: bool = False,
+) -> DataLoader:
+    """Create a DataLoader with specialized batching pattern.
+
+    Args:
+        file_path: Path to the HDF5 data file
+        batch_branch_size: Number of branch samples per batch
+        batch_trunk_size: Number of trunk samples per batch
+        num_workers: Number of DataLoader workers
+        prefetch_factor: Prefetch factor for DataLoader
+        pin_memory: Whether to pin memory for DataLoader
+        persistent_workers: Whether to use persistent workers for DataLoader
+
+    Returns:
+        Configured DataLoader.
+    """
+    dataset = H5Dataset(
+        file_path=file_path,
+        branch_batch_size=batch_branch_size,
+        trunk_batch_size=batch_trunk_size,
+    )
+
+    return DataLoader(
+        dataset=dataset,
+        batch_size=None,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+    )
+```
+</details>
+
+## context
+
+
+### Context
+
+
+Global distributed‑aware state.
+
+#### get
+
+```python
+get(cls) -> 'Context'
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def get(cls) -> "Context":
+    if cls._instance is None:
+        raise RuntimeError(f"{cls.__qualname__} has not been initialized. Create an instance first.")
+    return cls._instance
+```
+</details>
+
+#### sync
+
+```python
+sync(self)
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def sync(self):
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    if torch.mps.is_available():
+        torch.mps.synchronize()
+```
+</details>
+
+#### barrier
+
+```python
+barrier(self)
+```
+Block until all ranks synchronize (no-op if single‑process).
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def barrier(self):
+    """Block until all ranks synchronize (no-op if single‑process)."""
+    if self.is_distributed:
+        dist.barrier()
+```
+</details>
+
+#### no_sync
+
+```python
+no_sync(self, ddp_module: Module, enabled: bool)
+```
+Temporarily disable grad sync.
+
+Only works for DDP modules in distributed mode.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def no_sync(self, ddp_module: torch.nn.Module, /, enabled: bool = True):
+    """Temporarily disable grad sync.
+
+    Only works for DDP modules in distributed mode.
+    """
+    if enabled and self.is_distributed and hasattr(ddp_module, "no_sync"):
+        assert isinstance(ddp_module, (DistributedDataParallel, FullyShardedDataParallel))
+        return ddp_module.no_sync()
+    return contextlib.nullcontext()
+```
+</details>
+
+#### all_reduce_
+
+```python
+all_reduce_(cls, tensor: Tensor, op)
+```
+All‑reduce, no-op unless distributed.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def all_reduce_(cls, tensor: torch.Tensor, op=dist.ReduceOp.SUM):
+    """All‑reduce, no-op unless distributed."""
+    if cls.get().is_distributed:
+        dist.all_reduce(tensor, op=op)
+```
+</details>
+
+#### model_eval
+
+```python
+model_eval(self, model: Module)
+```
+Temporarily switch a model to eval mode.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@contextlib.contextmanager
+def model_eval(self, model: torch.nn.Module):
+    """Temporarily switch a model to eval mode."""
+    was_train = model.training
+    model.eval()
+    yield
+    if was_train:
+        model.train()
+```
+</details>
+
+#### on_rank
+
+```python
+on_rank(r: int)
+```
+Decorator to run function only on given rank with optional barrier fence.
+
+The function cannot return a value.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@staticmethod
+def on_rank(r: int = 0):
+    """Decorator to run function only on given rank with optional barrier fence.
+
+    The function cannot return a value.
+    """
+
+    def deco(fn: Callable[..., None]) -> Callable[..., None]:
+        import inspect
+
+        if (ret := inspect.signature(fn).return_annotation) not in (None, "None", inspect.Signature.empty):
+            raise TypeError(f"Cannot use `on_rank` with a function that returns a value. Got {repr(ret)}.")
+
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            ctx = Context.get()
+            if ctx.rank == r:
+                fn(*args, **kwargs)
+
+        return wrapped
+
+    return deco
+```
+</details>
+
+#### timing
+
+```python
+timing(self, label: str, distributed: bool, reduce_op: str)
+```
+Time a block across all ranks (if distributed), reduce (avg/min/max/sum) and log on main.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@contextlib.contextmanager
+def timing(self, label: str, *, distributed: bool = False, reduce_op: str = "avg"):
+    """Time a block across all ranks (if distributed), reduce (avg/min/max/sum) and log on main."""
+    import time
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    if distributed and self.is_distributed:
+        dist.barrier()
+    start = time.perf_counter()
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    if distributed and self.is_distributed:
+        dist.barrier()
+    elapsed = time.perf_counter() - start
+    reduce_op_str = ""
+    if distributed and self.is_distributed:
+        t = torch.tensor(elapsed, requires_grad=False, device=self.local_rank)
+        if reduce_op == "min":
+            dist.all_reduce(t, op=dist.ReduceOp.MIN)
+        elif reduce_op == "max":
+            dist.all_reduce(t, op=dist.ReduceOp.MAX)
+        else:
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            if reduce_op != "sum":
+                t /= self.world_size
+        reduce_op_str = f"({reduce_op})"
+        elapsed = t.item()
+    if self.is_main_process:
+        logger.info(f"[{label}] {elapsed:.4f}s {reduce_op_str}")
+```
+</details>
+
+#### timed
+
+```python
+timed(label: str, distributed: bool, reduce_op: str)
+```
+Decorator to wrap function call in a distributed timing block.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@staticmethod
+def timed(label: str, *, distributed: bool = False, reduce_op: str = "avg"):
+    """Decorator to wrap function call in a distributed timing block."""
+
+    def deco(fn):
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            ctx = Context.get()
+            with ctx.timing(label, distributed=distributed, reduce_op=reduce_op):
+                return fn(*args, **kwargs)
+
+        return wrapped
+
+    return deco
+```
+</details>
+
+## train
+
+
+### TrainConfig
+
+
+Training options for standard DON training
+
+#### validate
+
+```python
+validate(self) -> None
+```
+Validate after config is instantiated.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def validate(self) -> None:
+    """Validate after config is instantiated."""
+
+    # Typecheck
+    def _runtime_checkable(tp: type) -> bool:
+        try:
+            isinstance(None, tp)
+            return True
+        except TypeError:
+            return False
+
+    for name, field_def in self.__dataclass_fields__.items():
+        assert isinstance(field_def.type, typing._Final) or (type(field_def.type) is type), (
+            f"name: {field_def} {field_def.type} {type(field_def.type)}"
+        )
+        field_type = field_def.type
+        value = getattr(self, name)
+
+        if _runtime_checkable(field_type):  # type: ignore
+            if not isinstance(value, field_type):  # type: ignore
+                raise TypeError(f"Field '{name}' expected {field_type}, got {type(value)}: {value}")
+
+    # Cant batch on H5Dataset
+    if (
+        isinstance(getattr(self.dataloader, "dataset"), H5Dataset)
+        and self.dataloader.batch_size
+        and self.dataloader.batch_size != 1
+    ):
+        raise ValueError(
+            f"Found an invalid value for {self.dataloader.batch_size=} Batching is currently handled by {H5Dataset!s}"
+            "Please apply batch settings to the dataset."
+        )
+
+    if self.grad_accum_steps < 1:
+        raise ValueError(f"Invalid value for {self.grad_accum_steps=}. Must be >= 1.")
+```
+</details>
+
+#### from_cfg
+
+```python
+from_cfg(cls, cfg: DictConfig) -> TrainConfig
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@classmethod
+def from_cfg(cls, cfg: DictConfig) -> "TrainConfig":
+    model = hydra.utils.instantiate(cfg.model)
+    optimizer: Optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
+
+    self: TrainConfig = TrainConfig(
+        **hydra.utils.instantiate(
+            cfg,
+            model=model,
+            optimizer=optimizer,
+            scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer),
+            tracker=cfg.tracker if Context.get().is_main_process else None,
+        )
+    )
+    self.validate()
+    return self
+```
+</details>
+
+### evaluate
+
+```python
+evaluate(model: Module, dataloader: DataLoader, device: device, progress) -> float
+```
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@torch.inference_mode()
+def evaluate(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    progress=NullProgress(),
+) -> float:
+    numer_acc = torch.zeros(1, device=device)
+    denom_acc = torch.zeros(1, device=device)
+    diff_buf = None
+    taskid = progress.add_task("Evaluating", total=len(dataloader))
+    for batch in dataloader:
+        batch = [b.to(device) for b in batch]
+        *inputs, target = batch
+
+        pred = model(*inputs)
+
+        if diff_buf is None or diff_buf.shape != pred.shape:
+            diff_buf = torch.empty_like(pred)
+
+        torch.sub(pred, target, out=diff_buf)
+        numer_acc.add_(torch.dot(diff_buf.flatten(), diff_buf.flatten()))
+        denom_acc.add_(torch.dot(target.flatten(), target.flatten()))
+        progress.update(taskid, advance=1)
+
+    Context.all_reduce_(numer_acc, op=torch.distributed.ReduceOp.SUM)
+    Context.all_reduce_(denom_acc, op=torch.distributed.ReduceOp.SUM)
+
+    return (numer_acc / denom_acc.clamp_min(1e-12)).item() if denom_acc.item() > 0 else float("inf")
+```
+</details>
+
+### train
+
+```python
+train(model: Module, dataloader: DataLoader, val_dataloader: Optional, optimizer: Optimizer, scheduler: Optional, scaler: GradScaler, tracker: Optional, checkpoint_dir: Path, n_epochs: int, device: device, starting_epoch: int, starting_global_step: int, starting_best_val_loss: float, enable_amp: bool, grad_accum_steps: int, grad_clip_norm: Optional, log_interval: int, progress_bar: ProgressT, extra_tracker_context: Optional, extra_best_checkpoint_context: Optional) -> Tuple[float, int, int]
+```
+Train a model.
+
+Context must be initialized before calling this function.
+
+**Returns**
+
+  Tuple of `(best_val_loss, best_epoch, final_global_step)`
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def train(
+    model: nn.Module,
+    dataloader: DataLoader,
+    val_dataloader: Optional[DataLoader],
+    optimizer: Optimizer,
+    scheduler: Optional[LRScheduler],
+    scaler: GradScaler,
+    tracker: Optional[Run],
+    checkpoint_dir: Path,
+    n_epochs: int,
+    device: torch.device,
+    starting_epoch: int = 1,
+    starting_global_step: int = 0,
+    starting_best_val_loss: float = float("inf"),
+    enable_amp: bool = False,
+    grad_accum_steps: int = 1,
+    grad_clip_norm: Optional[float] = None,
+    log_interval: int = 100,
+    progress_bar: ProgressT = NullProgress(),
+    extra_tracker_context: Optional[AimObjectDict] = None,
+    extra_best_checkpoint_context: Optional[AimObjectDict] = None,
+) -> Tuple[float, int, int]:
+    """Train a model.
+
+    Context must be initialized before calling this function.
+
+    Returns:
+        Tuple of `(best_val_loss, best_epoch, final_global_step)`
+    """
+    ctx = Context.get()
+
+    world_size = ctx.world_size
+    logger.info(f"Using {device}")
+
+    model.train().to(device)
+    global_step = starting_global_step
+    best_val_loss = starting_best_val_loss
+    best_epoch = starting_epoch
+    warned = False
+
+    with progress_bar:
+        for epoch in range(starting_epoch, n_epochs + 1):
+            ctx.barrier()
+            epoch_total_loss = 0.0
+            epoch_batches = 0
+            if os.environ.get("HSPN_PRECISE_TIMING", False):
+                ctx.sync()
+            if ctx.is_distributed and (set_epoch := getattr(dataloader.sampler, "set_epoch", lambda _: None)):
+                set_epoch(epoch)
+            epoch_start_time = time.time()
+
+            task = progress_bar.add_task(f"Train Epoch {epoch}", total=len(dataloader))
+            accum = grad_accum_steps
+            optimizer.zero_grad()
+
+            for i, (*batch,) in enumerate(dataloader, start=1):
+                *inputs, target = batch
+                b_tgt = target.to(device)
+
+                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=enable_amp):
+                    preds = model(*[b_in.to(device) for b_in in inputs])
+                    loss = torch.nn.functional.mse_loss(preds, b_tgt, reduction="mean")
+                    loss.mul_(world_size / accum)
+
+                for e in inputs:
+                    del e
+                del b_tgt, target
+                scaler.scale(loss.float()).backward()
+
+                if device.type == "mps" and hasattr(scaler, "_scale") and not warned:
+                    logger.warning(
+                        'Patching scaler to avoid fp64 call on MPS. You might also need to set `PYTORCH_ENABLE_MPS_FALLBACK="1"`'
+                    )
+                    warned = True
+                    scaler._scale.double = scaler._scale.float  # type: ignore
+
+                epoch_batches += 1
+                epoch_total_loss += loss.item()
+
+                if i % accum == 0:
+                    if grad_clip_norm:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    if scheduler:
+                        scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+                    progress_bar.update(task, advance=1)
+
+                    if i > 0 and i % (log_interval / grad_accum_steps) == 0:
+                        logger.info(
+                            f"Epoch {epoch} [batch {i}/{len(dataloader)}] "
+                            f"Loss: {loss.item():.6f}, "
+                            f"Epoch Time Elapsed: {time.time() - epoch_start_time:.3f}s"
+                        )
+
+            avg_loss = epoch_total_loss / epoch_batches
+            if tracker and ctx.is_main_process:
+                log_context = {"phase": "train"} | (extra_tracker_context or {})
+                tracker.track(epoch, "epoch", global_step, context=log_context)
+                tracker.track(epoch_total_loss, "loss", global_step, context=log_context)
+                tracker.track(avg_loss, "avg_loss", global_step, context=log_context)
+
+                current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
+                tracker.track(current_lr, "learning_rate", global_step, context=log_context)
+
+            progress_bar.remove_task(task)
+            ctx.barrier()
+
+            if ctx.is_main_process:
+                if os.environ.get("HSPN_PRECISE_TIMING", False):
+                    ctx.sync()
+                logger.info(
+                    f"Train Epoch: {epoch} completed in {time.time() - epoch_start_time:.3f}s "
+                    f"Batches: {epoch_batches}, Avg Batch Total Loss: {avg_loss:.6f}"
+                )
+
+            # Val set
+            val_loss = None
+            if val_dataloader:
+                with ctx.model_eval(model):
+                    val_loss = evaluate(model, val_dataloader, device)
+                    logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
+
+                if ctx.is_main_process:
+                    if tracker:
+                        log_context = extra_tracker_context or {}
+                        log_context["phase"] = "val"
+                        tracker.track(val_loss, "relative_l2_loss", global_step, context=log_context)
+
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_epoch = epoch
+                        logger.info(f"New Best Epoch: {epoch}")
+                        save_checkpoint(
+                            checkpoint_dir / "best_model.pt",
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            gradscaler=scaler,
+                            epoch=epoch,
+                            metrics={
+                                "val_loss": best_val_loss,
+                                "best_val_loss": best_val_loss,
+                                "epoch": epoch,
+                                "global_step": global_step,
+                            },
+                            extra=extra_best_checkpoint_context,
+                        )
+
+    if _get_ddp_log := getattr(model, "_get_ddp_logging_data", False):
+        logger.info("can_set_static_graph=%s", _get_ddp_log().get("can_set_static_graph"))  # type: ignore
+
+    return best_val_loss, best_epoch, global_step
+```
+</details>
+
+## prepare
+
+
+Standalone script for converting DON training data from numpy files to HDF5 or NetCDF format.
+
+Chose to remove control of compression (because our data is not that big and it really slows everything) and control
+over chunking. Chunking might be added back, but can be modified other ways and made this script more complex.
+
+NB: NetCDF produces some big files.
+
+Usage:
+
+```bash
+python -m hspn.prepare --help
+python -m hspn.prepare format=HDF5 data_dir=./data
+python -m hspn.prepare format=HDF5 data_dir=./data  branch_files=[branch.npy]
+python -m hspn.prepare format=NETCDF data_dir=./data branch_files=[branch.npy]
+python -m hspn.prepare format=HDF5 data_dir=./data branch_files=[f_total.npy] trunk_files=[xyz.npy] output_files=[y_total.npy]
+```
+
+Note: Default config is prepare.yaml which can also be edited directly if desired.
+
+### FormatType
+
+
+Output file format
+
+### NormMethod
+
+
+Technique for preprocessing a feature
+
+### NormalizationConfig
+
+
+Feature normalization options.
+
+### ConversionConfig
+
+
+Main file conversion config.
+
+### validate_shapes
+
+```python
+validate_shapes(branch_data: ndarray, trunk_data: ndarray, output_data: ndarray) -> bool
+```
+Validate shapes are consistent with what we expect for DON training.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def validate_shapes(branch_data: np.ndarray, trunk_data: np.ndarray, output_data: np.ndarray) -> bool:
+    """Validate shapes are consistent with what we expect for DON training."""
+    logger.info(f"Branch shape:\t{branch_data.shape}")
+    logger.info(f"Trunk shape:\t{trunk_data.shape}")
+    logger.info(f"Output shape:\t{output_data.shape}")
+
+    if output_data.shape[0] != branch_data.shape[0]:
+        logger.error("First dimension of output should be the same as first dimension of branch")
+        return False
+
+    if output_data.shape[1] != trunk_data.shape[0]:
+        logger.error("Second dimension of output should be the same as first dimension of trunk")
+        return False
+
+    return True
+```
+</details>
+
+### NoneNormResult
+
+
+Result if no normalization was applied.
+
+### MinMaxNormResult
+
+
+Result if min-max normalization was applied.
+
+### StandardNormResult
+
+
+Result if standard normalization was applied.
+
+### normalize_data
+
+```python
+normalize_data(data: ndarray, config: NormalizationConfig, name: str) -> Union[NoneNormResult, MinMaxNormResult, StandardNormResult]
+```
+Normalize data using the specified method.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def normalize_data(
+    data: np.ndarray, config: NormalizationConfig, name: str = ""
+) -> Union[NoneNormResult, MinMaxNormResult, StandardNormResult]:
+    """Normalize data using the specified method."""
+    if config.method == NormMethod.NONE:
+        logger.info(f"Skipping normalization for {name}")
+        return NoneNormResult(data=data)  # NOT a copy
+
+    logger.info(f"Normalizing {name} data with method {config.method} along axis {config.axis}")
+
+    if config.method == NormMethod.MINMAX:
+        data_min: np.ndarray = np.min(data, axis=config.axis, keepdims=True)
+        data_max: np.ndarray = np.max(data, axis=config.axis, keepdims=True)
+        denom: np.ndarray = data_max - data_min
+        denom[denom == 0] = 1.0  # avoid div by 0
+        normalized = (data - data_min) / denom
+        return MinMaxNormResult(data=normalized, min=data_min, max=data_max)
+
+    elif config.method == NormMethod.STANDARD:
+        data_mean = np.mean(data, axis=config.axis, keepdims=True)
+        data_std = np.std(data, axis=config.axis, keepdims=True)
+        data_std[data_std == 0] = 1.0  # avoid div by 0
+        normalized = (data - data_mean) / data_std
+        return StandardNormResult(data=normalized, mean=data_mean, std=data_std)
+
+    raise ValueError(f"Unsupported normalization method: {config.method}")
+```
+</details>
+
+### load_npy_files
+
+```python
+load_npy_files(data_dir: str, branch_files: List, trunk_files: List, output_files: List) -> Tuple[np.ndarray, np.ndarray, np.ndarray]
+```
+Load data from numpy files and combine them if multiple files are provided.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def load_npy_files(
+    data_dir: str, branch_files: List[str], trunk_files: List[str], output_files: List[str]
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load data from numpy files and combine them if multiple files are provided."""
+    if not (len(branch_files) == len(trunk_files) == len(output_files)):
+        raise ValueError("Number of branch, trunk, and output files must be the same")
+
+    logger.info(f"Loading {len(branch_files)} file sets")
+
+    all_branch = []
+    all_trunk = []
+    all_output = []
+
+    for i, (branch_file, trunk_file, output_file) in enumerate(zip(branch_files, trunk_files, output_files)):
+        branch_path = os.path.join(data_dir, branch_file)
+        trunk_path = os.path.join(data_dir, trunk_file)
+        output_path = os.path.join(data_dir, output_file)
+
+        logger.info(f"Loading set {i + 1}:")
+        logger.info(f"  Branch: {branch_path}")
+        logger.info(f"  Trunk: {trunk_path}")
+        logger.info(f"  Output: {output_path}")
+
+        branch = np.load(branch_path, allow_pickle=True)
+        trunk = np.load(trunk_path, allow_pickle=True)
+        output = np.load(output_path, allow_pickle=True)
+
+        if not validate_shapes(branch, trunk, output):
+            logger.warning(f"Skipping invalid data set {i + 1}")
+            continue
+
+        all_branch.append(branch)
+        all_trunk.append(trunk)
+        all_output.append(output)
+
+    if not all_branch:
+        raise ValueError("No valid data sets found")
+
+    branch_data = np.concatenate(all_branch, axis=0)
+    trunk_data = np.concatenate(all_trunk, axis=0)
+
+    # Combined output needs to be [total_branch_size, total_trunk_size]
+    total_branch_size = branch_data.shape[0]
+    total_trunk_size = trunk_data.shape[0]
+
+    output_data = np.zeros((total_branch_size, total_trunk_size))
+
+    # Fill values
+    b_offset = 0
+    t_offset = 0
+
+    for i in range(len(all_branch)):
+        b_size = all_branch[i].shape[0]
+        t_size = all_trunk[i].shape[0]
+
+        output_data[b_offset : b_offset + b_size, t_offset : t_offset + t_size] = all_output[i]
+
+        b_offset += b_size
+        t_offset += t_size
+
+    logger.info("Combined data shapes:")
+    logger.info(f"  Branch: {branch_data.shape}")
+    logger.info(f"  Trunk: {trunk_data.shape}")
+    logger.info(f"  Output: {output_data.shape}")
+
+    return branch_data, trunk_data, output_data
+```
+</details>
+
+### create_hdf5_file
+
+```python
+create_hdf5_file(output_path: str, branch_data: ndarray, trunk_data: ndarray, output_data: ndarray, config: ConversionConfig) -> None
+```
+Create HDF5 file from numpy data with optional normalization.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def create_hdf5_file(
+    output_path: str,
+    branch_data: np.ndarray,
+    trunk_data: np.ndarray,
+    output_data: np.ndarray,
+    config: ConversionConfig,
+) -> None:
+    """Create HDF5 file from numpy data with optional normalization."""
+    if not validate_shapes(branch_data, trunk_data, output_data):
+        raise ValueError("Data shape validation failed")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # Process data
+    branch_proc = normalize_data(branch_data, config.branch_normalization, "branch")
+    trunk_proc = normalize_data(trunk_data, config.trunk_normalization, "trunk")
+    output_proc = normalize_data(output_data, config.output_normalization, "output")
+
+    # Get dimensions
+    n_branch, branch_dim = (
+        branch_proc["data"].shape if len(branch_proc["data"].shape) > 1 else (branch_proc["data"].shape[0], 1)
+    )
+    n_trunk, trunk_dim = (
+        trunk_proc["data"].shape if len(trunk_proc["data"].shape) > 1 else (trunk_proc["data"].shape[0], 1)
+    )
+
+    # Create HDF5 file
+    logger.info(f"Creating HDF5 file at {output_path}")
+    with h5py.File(output_path, "w") as f:
+        logger.info("Adding branch data")
+        f.create_dataset("branch", data=branch_proc["data"])
+
+        logger.info("Adding trunk data")
+        f.create_dataset("trunk", data=trunk_proc["data"])
+
+        logger.info("Adding output data")
+        f.create_dataset("output", data=output_proc["data"])
+
+        # Add normalization data (method, axis, min/max/etc)
+        norm_group = f.create_group("normalization")
+        for name, result in [("branch", branch_proc), ("trunk", trunk_proc), ("output", output_proc)]:
+            # Skip if no normalization was applied
+            norm_config = (
+                config.branch_normalization
+                if name == "branch"
+                else config.trunk_normalization
+                if name == "trunk"
+                else config.output_normalization
+            )
+
+            # Create a group for this component
+            component_group = norm_group.create_group(name)
+
+            # Add method and axis info
+            component_group.attrs["method"] = norm_config.method.value
+            component_group.attrs["axis"] = -1 if norm_config.axis is None else norm_config.axis
+
+            # Save all parameters except the normalized data itself (e.g. max, min)
+            for key, value in result.items():
+                if key != "data" and isinstance(value, (np.ndarray, float, int)):
+                    if isinstance(value, np.ndarray):
+                        component_group.create_dataset(key, data=value)
+                    else:
+                        component_group.attrs[key] = value
+
+        # Add metadata
+        meta_group = f.create_group("metadata")
+        meta_group.attrs["creation_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        meta_group.attrs["data_dir"] = config.data_dir
+        meta_group.attrs["branch_files"] = str(config.branch_files)
+        meta_group.attrs["trunk_files"] = str(config.trunk_files)
+        meta_group.attrs["output_files"] = str(config.output_files)
+
+        f.attrs["branch_size"] = n_branch
+        f.attrs["branch_dim"] = branch_dim
+        f.attrs["trunk_size"] = n_trunk
+        f.attrs["trunk_dim"] = trunk_dim
+        f.attrs["creation_time"] = str(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    logger.info("HDF5 file created.")
+```
+</details>
+
+### create_netcdf_file
+
+```python
+create_netcdf_file(output_path: str, branch_data: ndarray, trunk_data: ndarray, output_data: ndarray, config: ConversionConfig) -> None
+```
+Create NetCDF file from numpy data with optional normalization.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+def create_netcdf_file(
+    output_path: str,
+    branch_data: np.ndarray,
+    trunk_data: np.ndarray,
+    output_data: np.ndarray,
+    config: ConversionConfig,
+) -> None:
+    """Create NetCDF file from numpy data with optional normalization."""
+    import netCDF4 as nc
+
+    if not validate_shapes(branch_data, trunk_data, output_data):
+        raise ValueError("Data shape validation failed")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # Process data
+    branch_proc = normalize_data(branch_data, config.branch_normalization, "branch")
+    trunk_proc = normalize_data(trunk_data, config.trunk_normalization, "trunk")
+    output_proc = normalize_data(output_data, config.output_normalization, "output")
+
+    # Get dimensions
+    n_branch, branch_dim = (
+        branch_proc["data"].shape if len(branch_proc["data"].shape) > 1 else (branch_proc["data"].shape[0], 1)
+    )
+    n_trunk, trunk_dim = (
+        trunk_proc["data"].shape if len(trunk_proc["data"].shape) > 1 else (trunk_proc["data"].shape[0], 1)
+    )
+
+    logger.info(f"Creating NetCDF file at {output_path}")
+
+    with nc.Dataset(output_path, "w", format="NETCDF4") as ncfile:
+        ncfile.createDimension("n_branch", n_branch)
+        ncfile.createDimension("branch_dim", branch_dim)
+        ncfile.createDimension("n_trunk", n_trunk)
+        ncfile.createDimension("trunk_dim", trunk_dim)
+        metadata_group = ncfile.createGroup("metadata")
+
+        # Create variables
+        branch_var = ncfile.createVariable(
+            "branch",
+            "f4",
+            ("n_branch", "branch_dim"),
+        )
+        branch_var[:] = branch_proc["data"]
+        branch_var.long_name = "Branch parameters/functions"
+
+        trunk_var = ncfile.createVariable(
+            "trunk",
+            "f4",
+            ("n_trunk", "trunk_dim"),
+        )
+        trunk_var[:] = trunk_proc["data"]
+        trunk_var.long_name = "Trunk spatial points"
+
+        output_var = ncfile.createVariable(
+            "output",
+            "f4",
+            ("n_branch", "n_trunk"),
+        )
+        output_var[:] = output_proc["data"]
+        output_var.long_name = "Output values"
+        # NOTE: I am not actually sure how the metadata should be structured, specifically because we have nd-arrays
+        #  its not just all scalars we can attach as attrs. This appears to be correct but seems inconvenient to read.
+        # Add normalization info as simple attributes on the data variables
+        for var_name, result, nrm_config in [
+            ("branch", branch_proc, config.branch_normalization),
+            ("trunk", trunk_proc, config.trunk_normalization),
+            ("output", output_proc, config.output_normalization),
+        ]:
+            var = ncfile.variables[var_name]
+            var.normalization_method = nrm_config.method.value
+            var.normalization_axis = -1 if nrm_config.axis is None else nrm_config.axis
+
+            # Add any normalization parameters directly to the variable
+            for key, value in result.items():
+                if key != "data":
+                    if isinstance(value, np.ndarray):
+                        norm_var = metadata_group.createVariable(f"{var_name}_{key}", "f4", var.dimensions)
+                        norm_var[:] = value
+                    else:
+                        logger.warning(f"Got an unexpected dtype in normalization parameters. {key}={type(value)}")
+        # Add metadata
+        metadata_group.creation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        metadata_group.branch_size = n_branch
+        metadata_group.branch_dim = branch_dim
+        metadata_group.trunk_size = n_trunk
+        metadata_group.trunk_dim = trunk_dim
+        metadata_group.data_dir = config.data_dir
+        metadata_group.branch_files = str(config.branch_files)
+        metadata_group.trunk_files = str(config.trunk_files)
+        metadata_group.output_files = str(config.output_files)
+
+    logger.info("NetCDF file created.")
+```
+</details>
+
+### main
+
+```python
+main(cfg: DictConfig) -> None
+```
+Main entry point for data preparation.
+<details>
+<summary><i>Source Code</i></summary>
+
+```python
+@hydra.main(config_path="pkg://hspn.conf", config_name="prepare", version_base=None)
+def main(cfg: DictConfig) -> None:
+    """Main entry point for data preparation."""
+    OmegaConf.resolve(cfg)
+    logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
+    config: ConversionConfig = hydra.utils.instantiate(cfg)
+
+    if not config.output_path:
+        ext = ".h5" if config.format == FormatType.HDF5 else ".nc"
+        config.output_path = os.path.join(config.data_dir, f"don_dataset{ext}")
+
+    if os.path.exists(config.output_path) and not config.force:
+        logger.error(f"Output file already exists at {config.output_path}. Use force=true to overwrite.")
+        return
+
+    branch_data, trunk_data, output_data = load_npy_files(
+        config.data_dir, config.branch_files, config.trunk_files, config.output_files
+    )
+
+    if config.format == FormatType.HDF5:
+        create_hdf5_file(
+            config.output_path,
+            branch_data,
+            trunk_data,
+            output_data,
+            config,
+        )
+    else:  # NetCDF
+        create_netcdf_file(
+            config.output_path,
+            branch_data,
+            trunk_data,
+            output_data,
+            config,
+        )
+
+    logger.info(f"Data preparation complete. File saved to {config.output_path}")
+```
+</details>
+
+## conf
+
