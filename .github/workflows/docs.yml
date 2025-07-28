@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip install griffe==1.7.3
+          pip install -e .
 
       - uses: oven-sh/setup-bun@v1
         with:
