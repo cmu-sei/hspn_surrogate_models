@@ -2,6 +2,7 @@ import { defineConfig } from 'vocs'
 
 export default defineConfig({
   title: 'HSPN',
+  base: '/hspn_surrogate_models/',
   sidebar: [
     {
       text: 'Getting Started',
