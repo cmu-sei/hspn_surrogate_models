@@ -26,3 +26,13 @@ See the SLURM batch script for documentation on configuration options. Args can 
 ```sh
 sbatch --account=XXXXXXXX cluster/hpo.slurm comm_backend=gloo n_epochs=100
 ```
+
+## Scaling with DDP
+
+If multiple devices are visible DDP will be enabled. To test this locally without multiple devices:
+
+```sh
+WORLD_SIZE=2 python -m hspn.train
+# If using MPS you may need to set PYTORCH_ENABLE_MPS_FALLBACK=1
+# PYTORCH_ENABLE_MPS_FALLBACK=1 WORLD_SIZE=2 python -m hspn.train
+```
