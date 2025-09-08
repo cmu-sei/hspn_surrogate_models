@@ -17,18 +17,31 @@
 defaults:
   - train
   - override hydra/launcher: ray
+  - override hydra/sweeper: optuna
   - override hydra/hydra_logging: default
   - override hydra/job_logging: default
   - _self_
+
 hydra:
   mode: MULTIRUN
   sweeper:
+    storage: null
+    n_trials: ${oc.env:N_TRIALS,4}
+    n_jobs: ${oc.env:N_WORKERS,1}
     params:
       optimizer.lr: choice(1e-5, 3e-5)
       model.trunk_config.depth: choice(4, 6)
+
   launcher:
     ray:
       init:
-        address: ${oc.env:RAY_ADDRESS}
-      # remote:
-      #   # any arguments to pass to ray.remote go here
+        # Pull straight from .ray-head.json at compose time:
+        address: ${rayaddr:}         # or ${rayaddr:/path/to/.ray-head.json}
+        #working_dir: null            # no packaging
+        #py_modules: []
+        runtime_env: {}
+        object_store_memory: null
+      remote:
+        # any arguments to pass to ray.remote go here
+        num_gpus: ${env.int:GPUS_PER_TRIAL,0}
+        num_cpus: ${env.int:CPUS_PER_TRIAL,1}

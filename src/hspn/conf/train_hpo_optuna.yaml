@@ -39,8 +39,8 @@ hydra:
    direction: minimize
    study_name: ${oc.env:STUDY_NAME,hspn}
    storage: ${oc.env:OPTUNA_STORAGE_URL,null}
-   n_trials: ${oc.env:N_TRIALS} # max number of trials, the sweeper may find it needs fewer trials
-   n_jobs: ${oc.env:N_WORKERS}
+   n_trials: ${oc.env:N_TRIALS,100} # max number of trials, the sweeper may find it needs fewer trials
+   n_jobs: ${oc.env:N_WORKERS,1}
    params:
      optimizer.lr: choice(1e-5, 3e-5)
      model.trunk_config.width: choice(50, 100)

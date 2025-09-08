@@ -14,8 +14,15 @@
 # DM25-0396
 """HyperSPIN."""
 
+from __future__ import annotations
+
+import json
 import logging
 import threading
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from omegaconf import OmegaConf
 
 _log_ctx = threading.local()
 
@@ -77,3 +84,48 @@ def install_global_log_context() -> None:
         _orig_addHandler(self, hdlr)
 
     setattr(logging.Logger, "addHandler", _addHandlerWithPatch)
+
+
+def _load_head_json(path: Path) -> Dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "ray_address" not in data:
+        raise ValueError(f"{path} missing 'ray_address'")
+    return data
+
+
+def _resolve_ray_addr(json_path: Optional[str] = None) -> str:
+    """Get the Ray address from a JSON file (defaults to '.ray-head.json').
+    Usage in YAML: address: ${rayaddr:} or ${rayaddr:/abs/path/to/file.json}
+    """
+    return _resolve_json_key("ray_address", json_path)
+
+
+def _resolve_json_key(key: str, json_path: Optional[str] = None) -> str:
+    """Get a value from a json file.
+    Usage: ${jsonkey:ray_address} or ${jsonkey:port,.ray-head.json}
+    """
+    p = Path(json_path) if json_path else Path(".ray-head.json")
+    data = _load_head_json(p)
+    if key not in data:
+        raise KeyError(f"{key!r} not in {p}")
+    return str(data[key])
+
+
+def _env_int(key: str, default: int) -> int:
+    """Fetch an environment variable as int."""
+    import os
+
+    value = os.environ.get(key, default)
+    try:
+        return int(value)
+    except ValueError as e:
+        raise ValueError(f"Environment variable {key} must be an int, got {value!r}") from e
+
+
+def _register_oc_resolvers() -> None:
+    OmegaConf.register_new_resolver("env.int", _env_int, use_cache=True)
+    OmegaConf.register_new_resolver("rayaddr", _resolve_ray_addr, use_cache=False)
+    OmegaConf.register_new_resolver("jsonkey", _resolve_json_key, use_cache=False)
+
+
+_register_oc_resolvers()

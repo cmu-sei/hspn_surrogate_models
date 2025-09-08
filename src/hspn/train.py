@@ -357,30 +357,21 @@ def train(
     return best_val_loss, best_epoch, global_step
 
 
-@hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)
 def _main(cfg: DictConfig) -> float:
     ctx = Context()
-
-    if os.environ.get("HSPN_DETERMINISTIC", False):
-        torch.use_deterministic_algorithms(True)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
     rank, world_size = ctx.rank, ctx.world_size
     if ctx.is_distributed:
         set_log_context(rank=ctx.rank, world_size=ctx.world_size)
         install_global_log_context()
 
-    OmegaConf.resolve(cfg)
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Set seeds
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
 
-    # Log env vars
     for k, v in os.environ.items():
         if any(x in k.lower() for x in ("ray", "hspn", "pbs", "slurm", "nvidia", "cuda", "tainer")):
             logger.info(f"[ENV] {k}={v}")
@@ -484,7 +475,8 @@ def _main(cfg: DictConfig) -> float:
     return best_val_loss
 
 
-main = wrap_as_distributed(_main)
+_w_main = wrap_as_distributed(_main)
+main = hydra.main(config_path="pkg://hspn.conf", config_name="train", version_base=None)(_w_main)
 
 if __name__ == "__main__":
     import logging

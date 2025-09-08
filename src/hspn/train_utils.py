@@ -22,10 +22,12 @@ from functools import wraps
 from pathlib import Path
 from pprint import pformat
 from types import TracebackType
-from typing import Any, Callable, Dict, Optional, OrderedDict, ParamSpec, Protocol, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, OrderedDict, ParamSpec, Protocol, Type, TypeVar, Union
 
+from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.distributed as dist
+from torch.multiprocessing import get_context
 from torch.multiprocessing.spawn import spawn
 import torch.nn as nn
 from rich.progress import TaskID
@@ -35,6 +37,9 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.optim.optimizer import Optimizer
 
 from hspn.context import Context
+
+if TYPE_CHECKING:
+    from torch.multiprocessing import SimpleQueue
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -74,8 +79,17 @@ def _get_master_port():
     return port
 
 
-def worker_fn(rank: int, world_size: int, fn, args, kwargs) -> None:
+def worker_fn(
+    rank: int,
+    world_size: int,
+    fn: Callable[P, R],
+    args,
+    kwargs,
+    retq: SimpleQueue[Optional[R]],
+) -> None:
+    # Propagate env
     os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
     backend = "gloo"
     if torch.cuda.is_available():
         backend = "nccl"
@@ -85,41 +99,65 @@ def worker_fn(rank: int, world_size: int, fn, args, kwargs) -> None:
         else:
             logger.info(f'Found CUDA_VISIBLE_DEVICES="{cvd}" setting `torch.cuda.set_device({rank})`')
             torch.cuda.set_device(rank)
-    logger.info(f"Initializing process group {backend=} {rank=} {world_size=}")
+    logger.info("Initializing process group backend=%s rank=%d world_size=%d", backend, rank, world_size)
     dist.init_process_group(backend=backend, init_method="env://", rank=rank, world_size=world_size)
     try:
-        res = fn(*args, **kwargs)
-        logger.info(f"returned from func w value {res} shutting down")
+        result: Optional[R] = fn(*args, **kwargs)  # pyright: ignore[reportCallIssue] - limitation of python typing
+        # Only rank 0 sends result back
+        retq.put(result if rank == 0 else None)
+    except Exception as e:
+        # Surface child failure to parent (rank 0 sends the exception object)
+        if rank == 0:
+            retq.put(e)  # type: ignore[arg-type]
+        raise
     finally:
         dist.destroy_process_group()
 
 
 def wrap_as_distributed(fn: Callable[P, R]):
     @wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs):
-        if torch.cuda.is_available():
-            world_size = torch.cuda.device_count()
-        else:
-            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    def _wrapped(*args: P.args, **kwargs: P.kwargs):
+        if args and isinstance(args[0], DictConfig):
+            OmegaConf.resolve(args[0])
 
-        if world_size <= 1:
+        for v in kwargs.values():
+            if isinstance(v, DictConfig):
+                OmegaConf.resolve(v)
+
+        world_size: int = (
+            torch.cuda.device_count() if torch.cuda.is_available() else int(os.environ.get("WORLD_SIZE", "1"))
+        )
+        disable_spawn: bool = os.environ.get("HSPN_DISABLE_SPAWN", "0") == "1"
+        if world_size <= 1 or disable_spawn:
             logger.info("Running without distributed.")
-            fn(*args, **kwargs)
-            return
+            return fn(*args, **kwargs)
 
-        master_port = _get_master_port()
-        os.environ["WORLD_SIZE"] = str(world_size)
-        os.environ["MASTER_PORT"] = str(master_port)
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        logger.info(f"Spawning {world_size=} processes. {os.environ.get('MASTER_ADDR')}:{master_port}")
+        os.environ["MASTER_PORT"] = str(_get_master_port())
+
+        ctx = get_context("spawn")
+        retq: SimpleQueue[Optional[R]] = ctx.SimpleQueue()
+        logger.info("Spawning %d ranks at %s:%s", world_size, os.environ["MASTER_ADDR"], os.environ["MASTER_PORT"])
         spawn(
             worker_fn,
-            args=(world_size, fn, args, kwargs),
+            args=(world_size, fn, args, kwargs, retq),
             nprocs=world_size,
             join=True,
         )
 
-    return wrapper
+        # Collect one result per rank. use the non-None from rank 0.
+        result: Optional[R] = None
+        for _ in range(world_size):
+            got = retq.get()
+            # If the worker sent an exception object, re-raise it here.
+            if isinstance(got, BaseException):
+                raise got
+            if got is not None:
+                result = got
+        assert result is not None, "No result returned from rank 0"
+        return result
+
+    return _wrapped
 
 
 @Context.on_rank(0)
