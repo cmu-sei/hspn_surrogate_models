@@ -14,8 +14,8 @@
 # DM25-0396
 #
 from __future__ import annotations
+
 import logging
-from multiprocessing import Value
 from pathlib import Path
 from types import TracebackType
 from typing import Optional, Type, Union
@@ -44,23 +44,35 @@ class H5Dataset(IterableDataset):
     ):
         super().__init__()
         self.file_path = Path(file_path).resolve()
+        # import numpy as np
+        itemsize_to_load_dtype = {
+            2: "float16",  # f16, bf16, etc
+            4: "float32",
+            8: "float64",
+        }
+        if dtype.itemsize not in itemsize_to_load_dtype:
+            raise ValueError(f"Unsupported type {dtype}")
+        load_dtype = itemsize_to_load_dtype[dtype.itemsize]
         self.dtype = dtype
 
         self.is_distributed = dist.is_initialized()
         self.rank = dist.get_rank() if self.is_distributed else 0
         self.world_size = dist.get_world_size() if self.is_distributed else 1
 
-        logger.info(f"Loading HDF5 dataset from {self.file_path}")
+        logger.info(f"Loading HDF5 dataset from {self.file_path} in {load_dtype}")
         self.file = h5py.File(self.file_path, "r")
 
         branch = self.file["branch"]
         assert isinstance(branch, h5py.Dataset)
+        branch = branch.astype(load_dtype)
 
         trunk = self.file["trunk"]
         assert isinstance(trunk, h5py.Dataset)
+        trunk = trunk.astype(load_dtype)
 
         output = self.file["output"]
         assert isinstance(output, h5py.Dataset)
+        output = output.astype(load_dtype)
 
         if isinstance(branch_batch_size, (float, int)):
             if 0 < branch_batch_size < 1:
@@ -134,11 +146,6 @@ class H5Dataset(IterableDataset):
         )
         assert trunk_n > 0, f"Trunk start and end indices must be valid ({global_trunk_start}, {global_trunk_end})"
 
-        # # Each worker gets a slice of the branch data
-        # branch_per_rank = branch_n // self.world_size
-        # branch_start = self.rank * branch_per_rank
-        # branch_end = (self.rank + 1) * branch_per_rank if self.rank != self.world_size - 1 else branch_n
-
         # Each worker gets a slice of the trunk data
         chunk_size = trunk_n // self.world_size
         trunk_start = global_trunk_start + self.rank * chunk_size
@@ -160,20 +167,23 @@ class H5Dataset(IterableDataset):
             return f"{x:.2f}GiB"
 
         # Branch data is not chunked among workers as it is typically quite small
-        logger.info(f"Preloading branch data: {branch.size:_} elements in {dtype} {GiBfmt(GiB(branch.size))}")
+        logger.info(
+            f"Preloading branch data: {branch.size:_} elements in "
+            f"{branch.dtype} {GiBfmt(GiB(branch.size, branch.dtype.itemsize))}"
+        )
         self.branch = branch[global_branch_start:global_branch_end, ...]
 
         trunk_chunk_size = (trunk_end - trunk_start) * trunk.shape[1]  # trunk chunk size * n trunk features
         logger.info(
-            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:_} elements in {trunk.dtype} "
-            f"{GiBfmt(GiB(trunk_chunk_size, trunk.dtype.itemsize))}"
+            f"Preloading trunk data for worker {self.rank + 1}/{self.world_size}: {trunk_chunk_size:_} elements in "
+            f"{trunk.dtype} {GiBfmt(GiB(trunk_chunk_size, trunk.dtype.itemsize))}"
         )
         self.trunk = trunk[trunk_start:trunk_end]
 
         output_chunk_size = output.shape[0] * (trunk_end - trunk_start)  # branch size * trunk chunk size
         logger.info(
-            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:_} elements in {output.dtype} "
-            f"{GiBfmt(GiB(output_chunk_size, output.dtype.itemsize))}"
+            f"Preloading output data for worker {self.rank + 1}/{self.world_size}: {output_chunk_size:_} elements in "
+            f"{output.dtype} {GiBfmt(GiB(output_chunk_size, output.dtype.itemsize))}"
         )
         self.output = output[:, trunk_start:trunk_end]  # (n_branch, n_trunk)
 
