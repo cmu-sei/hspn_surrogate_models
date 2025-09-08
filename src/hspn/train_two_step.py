@@ -192,9 +192,11 @@ class StepConfig:
     """Training config for a step of two-step training."""
 
     n_epochs: int
-    enable_amp: bool
+    # enable_amp: bool
+    amp_dtype: Optional[Literal["fp16", "bf16"]]
     grad_accum_steps: int
-    enable_grad_scaling: bool
+    # enable_grad_scaling: bool
+    grad_scaling: Optional[bool]
     grad_clip_norm: Optional[float]
     optimizer: Optimizer
     scheduler: Optional[LRScheduler]
@@ -247,9 +249,9 @@ class TwoStepTrainConfig:
         )
         trunk_config = StepConfig(
             n_epochs=cfg.trunk_config.n_epochs,
-            enable_amp=cfg.trunk_config.enable_amp,
+            amp_dtype=cfg.trunk_config.amp_dtype,
             grad_accum_steps=cfg.trunk_config.grad_accum_steps,
-            enable_grad_scaling=cfg.trunk_config.enable_grad_scaling,
+            grad_scaling=cfg.trunk_config.grad_scaling,
             grad_clip_norm=cfg.trunk_config.get("grad_clip_norm"),
             optimizer=trunk_optimizer,
             scheduler=trunk_scheduler,
@@ -266,9 +268,9 @@ class TwoStepTrainConfig:
         )
         branch_config = StepConfig(
             n_epochs=cfg.branch_config.n_epochs,
-            enable_amp=cfg.branch_config.enable_amp,
+            amp_dtype=cfg.trunk_config.amp_dtype,
             grad_accum_steps=cfg.branch_config.grad_accum_steps,
-            enable_grad_scaling=cfg.branch_config.enable_grad_scaling,
+            grad_scaling=cfg.trunk_config.grad_scaling,
             grad_clip_norm=cfg.branch_config.get("grad_clip_norm"),
             optimizer=branch_optimizer,
             scheduler=branch_scheduler,
@@ -363,12 +365,12 @@ def train_two_step(
         val_dataloader=None,
         optimizer=trunk_optimizer,
         scheduler=config.trunk_config.scheduler,
-        scaler=GradScaler(device=device.type, enabled=config.trunk_config.enable_grad_scaling),
+        scaler=GradScaler(device=device.type, enabled=config.trunk_config.grad_scaling or False),
         tracker=config.tracker,
         checkpoint_dir=config.checkpoint_dir / "trunk",
         n_epochs=config.trunk_config.n_epochs,
         device=device,
-        enable_amp=config.trunk_config.enable_amp,
+        amp_dtype=config.trunk_config.amp_dtype,
         grad_accum_steps=config.trunk_config.grad_accum_steps,
         grad_clip_norm=config.trunk_config.grad_clip_norm,
         log_interval=config.log_interval,
@@ -408,18 +410,19 @@ def train_two_step(
         shuffle=shuffle and (sampler is None),
         pin_memory=torch.cuda.is_available(),
     )
+    branch_scaler = GradScaler(device=device.type, enabled=config.branch_config.grad_scaling or False)
     best_branch_val_loss, best_branch_epoch, _ = train(
         model=branch_model,
         dataloader=branch_loader,
         val_dataloader=None,
         optimizer=config.branch_config.optimizer,
         scheduler=config.branch_config.scheduler,
-        scaler=GradScaler(device=device.type, enabled=config.branch_config.enable_grad_scaling),
+        scaler=branch_scaler,
         tracker=config.tracker,
         checkpoint_dir=config.checkpoint_dir / "branch",
         n_epochs=config.branch_config.n_epochs,
         device=device,
-        enable_amp=config.branch_config.enable_amp,
+        amp_dtype=config.trunk_config.amp_dtype,
         grad_accum_steps=config.branch_config.grad_accum_steps,
         grad_clip_norm=config.branch_config.grad_clip_norm,
         log_interval=config.log_interval,
@@ -433,7 +436,7 @@ def train_two_step(
             model=model,
             optimizer=config.branch_config.optimizer,
             scheduler=config.branch_config.scheduler,
-            gradscaler=GradScaler(device=device.type, enabled=config.branch_config.enable_grad_scaling),
+            gradscaler=branch_scaler,
             epoch=config.branch_config.n_epochs,
             metrics={
                 "trunk_val_loss": best_trunk_val_loss,
@@ -464,13 +467,11 @@ def _main(cfg: DictConfig) -> float:
     OmegaConf.resolve(cfg)
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Set seeds
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
     numpy.random.seed(cfg.seed)
     random.seed(cfg.seed)
 
-    # Log environment variables
     for k, v in os.environ.items():
         if any(x in k.lower() for x in ("ray", "hspn", "pbs", "slurm", "nvidia", "cuda", "tainer")):
             logger.info(f"[ENV] {k}={v}")
@@ -499,7 +500,6 @@ def _main(cfg: DictConfig) -> float:
             U_train=config.train_dataset.output,
         )
 
-        # Setup progress bar
         progress_bar: ProgressT
         if ctx.is_main_process:
             progress_bar = Progress(
@@ -512,7 +512,7 @@ def _main(cfg: DictConfig) -> float:
         else:
             progress_bar = NullProgress()
 
-        # Run two-step training
+        # Train
         best_trunk_loss, best_branch_loss = train_two_step(
             config=config,
             state=state,
@@ -520,7 +520,7 @@ def _main(cfg: DictConfig) -> float:
             progress_bar=progress_bar,
         )
 
-        # Run validation if provided
+        # Val
         if config.val_dataloader and ctx.is_main_process:
             logger.info("Running final validation...")
             with ctx.model_eval(model):

@@ -24,9 +24,9 @@ n_epochs: 2
 comm_backend: nccl
 log_interval: 100 # number of batches
 checkpoint_dir: ${hydra:runtime.output_dir}
-enable_amp: false
+amp_dtype: null # f32 (default) or bf16 or fp16 for older hardware (consider grad scaling if fp16)
+grad_scaling: null # force enable/disable or auto-detect. Autodetect enables for fp16, otherwise disabled.
 grad_accum_steps: 1
-enable_grad_scaling: false
 grad_clip_norm: null
 
 # Model config -----------------------------------------------------------------

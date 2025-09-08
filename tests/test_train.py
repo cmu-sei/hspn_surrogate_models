@@ -53,9 +53,9 @@ n_epochs: 1
 comm_backend: gloo
 log_interval: 1
 checkpoint_dir: placeholder
-enable_amp: false
+amp_dtype: bf16 # or fp16 for older hardware (consider grad scaling if fp16)
+grad_scaling: null # force enable/disable or auto-detect. Autodetect enables for fp16, otherwise disabled.
 grad_accum_steps: 1
-enable_grad_scaling: false
 grad_clip_norm: null
 
 model:
@@ -133,7 +133,7 @@ def test_train_single_epoch(minimal_cfg):
     optimizer = config.optimizer
     dataloader = config.dataloader
     val_dataloader = config.val_dataloader
-    scaler = GradScaler(enabled=config.enable_grad_scaling)
+    scaler = GradScaler(enabled=config.grad_scaling or False)
     scheduler = config.scheduler
 
     best_val_loss, best_epoch, global_step = train(
@@ -149,7 +149,7 @@ def test_train_single_epoch(minimal_cfg):
         starting_epoch=1,
         starting_global_step=0,
         starting_best_val_loss=float("inf"),
-        enable_amp=config.enable_amp,
+        amp_dtype=config.amp_dtype,
         grad_accum_steps=config.grad_accum_steps,
         grad_clip_norm=config.grad_clip_norm,
         log_interval=config.log_interval,

@@ -20,13 +20,15 @@ import contextlib
 import logging
 import os
 from functools import wraps
-from typing import Callable, Optional, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Callable, Optional, ParamSpec, TypeVar
 
 import torch
 import torch.distributed as dist
-from torch.distributed.distributed_c10d import Backend
 from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.nn.parallel import DistributedDataParallel
+
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import Backend
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class Context:
-    """Global distributed‑aware state."""
+    """Global distributed-aware state."""
 
     _instance: Optional["Context"] = None
 
@@ -98,7 +100,7 @@ class Context:
 
     @classmethod
     def all_reduce_(cls, tensor: torch.Tensor, op=dist.ReduceOp.SUM):
-        """All‑reduce, no-op unless distributed."""
+        """All-reduce, no-op unless distributed."""
         if cls.get().is_distributed:
             dist.all_reduce(tensor, op=op)
 
@@ -122,7 +124,7 @@ class Context:
             import inspect
 
             if (ret := inspect.signature(fn).return_annotation) not in (None, "None", inspect.Signature.empty):
-                raise TypeError(f"Cannot use `on_rank` with a function that returns a value. Got {repr(ret)}.")
+                raise TypeError(f"Cannot use `on_rank` with a function that returns a value. Got {ret!r}.")
 
             @wraps(fn)
             def wrapped(*args, **kwargs):

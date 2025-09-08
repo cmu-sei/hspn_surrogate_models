@@ -125,9 +125,9 @@ model:
 # Trunk training configuration -------------------------------------------------
 trunk_config:
   n_epochs: 50
-  enable_amp: false
+  amp_dtype: bf16 # or fp16 for older hardware (consider grad scaling if fp16)
+  grad_scaling: null # force enable/disable or auto-detect. Autodetect enables for fp16, otherwise disabled.
   grad_accum_steps: 1
-  enable_grad_scaling: false
   grad_clip_norm: null
   batch_size: 100_000
 
@@ -149,9 +149,9 @@ trunk_config:
 # Branch training configuration ------------------------------------------------
 branch_config:
     n_epochs: 100
-    enable_amp: false
+    amp_dtype: bf16 # or fp16 for older hardware (consider grad scaling if fp16)
+    grad_scaling: null # force enable/disable or auto-detect. Autodetect enables for fp16, otherwise disabled.
     grad_accum_steps: 1
-    enable_grad_scaling: false
     grad_clip_norm: null
     batch_size: 100_000
 

@@ -18,13 +18,14 @@ import logging
 import os
 import random
 import time
+import typing
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-import typing
 from typing import Any, Literal, Optional, Tuple
 
 import hydra
-import numpy
+import numpy as np
 import torch
 from aim import Run
 from aim.sdk.types import AimObjectDict
@@ -63,9 +64,9 @@ class TrainConfig:
     seed: int
     n_epochs: int
     checkpoint_dir: Path
-    enable_amp: bool
+    amp_dtype: Optional[Literal["fp16", "bf16"]]
     grad_accum_steps: int
-    enable_grad_scaling: bool
+    grad_scaling: Optional[bool]
     grad_clip_norm: Optional[float]
     model: nn.Module
     dataloader: DataLoader
@@ -116,10 +117,23 @@ class TrainConfig:
         if self.grad_accum_steps < 1:
             raise ValueError(f"Invalid value for {self.grad_accum_steps=}. Must be >= 1.")
 
+        # Validate AMP makes sense
+        if self.amp_dtype == "fp16":
+            if self.grad_scaling is False:
+                logger.warning("FP16 AMP without grad scaling may cause gradient overflow")
+        elif self.amp_dtype == "bf16":
+            if self.grad_scaling is True:
+                logger.warning("BF16 AMP doesn't need grad scaling")
+        elif self.amp_dtype is None and self.grad_scaling is True:
+            logger.warning("Grad scaling enabled without AMP has no effect")
+
     @classmethod
     def from_cfg(cls, cfg: DictConfig) -> "TrainConfig":
         model = hydra.utils.instantiate(cfg.model)
         optimizer: Optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
+
+        # auto-detect grad_scaling if None, only enable for fp16
+        grad_scaling = cfg.get("grad_scaling", cfg.get("amp_dtype") == "fp16")
 
         self: TrainConfig = TrainConfig(
             **hydra.utils.instantiate(
@@ -128,6 +142,7 @@ class TrainConfig:
                 optimizer=optimizer,
                 scheduler=cfg.scheduler and hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer),
                 tracker=cfg.tracker if Context.get().is_main_process else None,
+                grad_scaling=grad_scaling,
             )
         )
         self.validate()
@@ -179,7 +194,7 @@ def train(
     starting_epoch: int = 1,
     starting_global_step: int = 0,
     starting_best_val_loss: float = float("inf"),
-    enable_amp: bool = False,
+    amp_dtype: Optional[Literal["fp16", "bf16"]] = None,
     grad_accum_steps: int = 1,
     grad_clip_norm: Optional[float] = None,
     log_interval: int = 100,
@@ -196,7 +211,6 @@ def train(
     """
     ctx = Context.get()
 
-    world_size = ctx.world_size
     logger.info(f"Using {device}")
 
     model.train().to(device)
@@ -204,6 +218,9 @@ def train(
     best_val_loss = starting_best_val_loss
     best_epoch = starting_epoch
     warned = False
+
+    amp_enabled = amp_dtype is not None
+    autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16 if amp_dtype == "fp16" else torch.float32
 
     with progress_bar:
         for epoch in range(starting_epoch, n_epochs + 1):
@@ -217,26 +234,31 @@ def train(
             epoch_start_time = time.time()
 
             task = progress_bar.add_task(f"Train Epoch {epoch}", total=len(dataloader))
-            accum = grad_accum_steps
             optimizer.zero_grad()
 
             for i, (*batch,) in enumerate(dataloader, start=1):
                 *inputs, target = batch
-                b_tgt = target.to(device)
 
-                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=enable_amp):
-                    preds = model(*[b_in.to(device) for b_in in inputs])
-                    loss = torch.nn.functional.mse_loss(preds, b_tgt, reduction="mean")
-                    loss.mul_(world_size / accum)
+                pass_ctx = ExitStack()
+                pass_ctx.enter_context(torch.autocast(device.type, dtype=autocast_dtype, enabled=amp_enabled))
+                # Sync DDP only on last microbatch
+                if hasattr(model, "no_sync") and (i % grad_accum_steps != 0) and (i != len(dataloader)):
+                    pass_ctx.enter_context(model.no_sync())
+
+                with pass_ctx:
+                    preds = model(*[x.to(device, non_blocking=False) for x in inputs])
+                    loss = torch.nn.functional.mse_loss(preds, target.to(device), reduction="mean")
+                    scaled_loss = loss / grad_accum_steps
 
                 for e in inputs:
                     del e
-                del b_tgt, target
-                scaler.scale(loss.float()).backward()
+                del target
+                scaler.scale(scaled_loss.float()).backward()
 
                 if device.type == "mps" and hasattr(scaler, "_scale") and not warned:
                     logger.warning(
-                        'Patching scaler to avoid fp64 call on MPS. You might also need to set `PYTORCH_ENABLE_MPS_FALLBACK="1"`'
+                        "Patching scaler to avoid fp64 call on MPS. You might also need to set "
+                        '`PYTORCH_ENABLE_MPS_FALLBACK="1"`'
                     )
                     warned = True
                     scaler._scale.double = scaler._scale.float  # type: ignore
@@ -244,7 +266,7 @@ def train(
                 epoch_batches += 1
                 epoch_total_loss += loss.item()
 
-                if i % accum == 0:
+                if i % grad_accum_steps == 0:
                     if grad_clip_norm:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
@@ -262,6 +284,18 @@ def train(
                             f"Loss: {loss.item():.6f}, "
                             f"Epoch Time Elapsed: {time.time() - epoch_start_time:.3f}s"
                         )
+
+            # Handle tail flush
+            if len(dataloader) % grad_accum_steps != 0:
+                if grad_clip_norm:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                if scheduler:
+                    scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
 
             avg_loss = epoch_total_loss / epoch_batches
             if tracker and ctx.is_main_process:
@@ -343,7 +377,7 @@ def _main(cfg: DictConfig) -> float:
     # Set seeds
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
-    numpy.random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
     random.seed(cfg.seed)
 
     # Log env vars
@@ -359,17 +393,18 @@ def _main(cfg: DictConfig) -> float:
     try:
         config = TrainConfig.from_cfg(cfg)
 
-        device = torch.device(rank)
+        device = torch.device(rank if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
             torch.cuda.set_device(device)
         logger.info(f"Using {device}/{torch.get_device_module(device).device_count()}")
 
         model = config.model.train()
-        model.to(device)
         if world_size > 1:
             model = nn.parallel.DistributedDataParallel(model)
+        else:
+            model.to(device)
 
-        scaler = GradScaler(device=device.type, enabled=config.enable_grad_scaling)
+        scaler = GradScaler(device=device.type, enabled=config.grad_scaling or False)
 
         if scaler.is_enabled():
             logger.info("AMP grad scaling enabled")
@@ -380,7 +415,7 @@ def _main(cfg: DictConfig) -> float:
 
         # Load checkpoint if available
         if config.checkpoint_dir.exists() and (ckpts := list(config.checkpoint_dir.glob("checkpoint_*.pt"))):
-            latest = sorted(ckpts)[-1]
+            latest = max(ckpts)
             ckpt = load_checkpoint(
                 latest,
                 model=model,
@@ -428,7 +463,7 @@ def _main(cfg: DictConfig) -> float:
             starting_epoch=epoch,
             starting_global_step=global_step,
             starting_best_val_loss=best_val_loss,
-            enable_amp=config.enable_amp,
+            amp_dtype=config.amp_dtype,
             grad_accum_steps=config.grad_accum_steps,
             grad_clip_norm=config.grad_clip_norm,
             log_interval=config.log_interval,
