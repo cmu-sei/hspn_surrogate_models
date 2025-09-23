@@ -87,6 +87,14 @@ def worker_fn(
     kwargs,
     retq: SimpleQueue[Optional[R]],
 ) -> None:
+    import sys, logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"[%(asctime)s] [rank={rank}] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)],
+        force=True,
+    )
     # Propagate env
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
@@ -147,7 +155,7 @@ def wrap_as_distributed(fn: Callable[P, R]):
 
         # Collect one result per rank. use the non-None from rank 0.
         result: Optional[R] = None
-        for _ in range(world_size):
+        for _ in range(world_size): # drain queue
             got = retq.get()
             # If the worker sent an exception object, re-raise it here.
             if isinstance(got, BaseException):

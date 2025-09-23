@@ -104,6 +104,12 @@ class Context:
         if cls.get().is_distributed:
             dist.all_reduce(tensor, op=op)
 
+    @classmethod
+    def broadcast_(cls, tensor: torch.Tensor, src: int, **kwargs):
+        """Broadcast, no-op unless distributed."""
+        if cls.get().is_distributed:
+            _ = dist.broadcast(tensor, src=src, **kwargs)
+
     @contextlib.contextmanager
     def model_eval(self, model: torch.nn.Module):
         """Temporarily switch a model to eval mode."""

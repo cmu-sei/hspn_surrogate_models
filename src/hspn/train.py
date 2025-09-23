@@ -148,7 +148,6 @@ class TrainConfig:
         self.validate()
         return self
 
-
 @torch.inference_mode()
 def evaluate(
     model: nn.Module,
@@ -179,7 +178,6 @@ def evaluate(
 
     return (numer_acc / denom_acc.clamp_min(1e-12)).item() if denom_acc.item() > 0 else float("inf")
 
-
 def train(
     model: nn.Module,
     dataloader: DataLoader,
@@ -191,6 +189,7 @@ def train(
     checkpoint_dir: Path,
     n_epochs: int,
     device: torch.device,
+    *,
     starting_epoch: int = 1,
     starting_global_step: int = 0,
     starting_best_val_loss: float = float("inf"),
@@ -198,139 +197,195 @@ def train(
     grad_accum_steps: int = 1,
     grad_clip_norm: Optional[float] = None,
     log_interval: int = 100,
-    progress_bar: ProgressT = NullProgress(),
+    progress_bar: "ProgressT" = None,
     extra_tracker_context: Optional[AimObjectDict] = None,
     extra_best_checkpoint_context: Optional[AimObjectDict] = None,
 ) -> Tuple[float, int, int]:
-    """Train a model.
-
-    Context must be initialized before calling this function.
+    """Distributed training loop.
 
     Returns:
-        Tuple of `(best_val_loss, best_epoch, final_global_step)`
+        (best_val_loss, best_epoch, final_global_step)
     """
     ctx = Context.get()
 
-    logger.info(f"Using {device}")
+    assert grad_accum_steps >= 1, f"{grad_accum_steps=} must be >= 1"
+    amp_enabled: bool = amp_dtype is not None
+    autocast_dtype: torch.dtype = (
+        torch.bfloat16 if amp_dtype == "bf16"
+        else torch.float16 if amp_dtype == "fp16"
+        else torch.float32
+    )
 
-    model.train().to(device)
-    global_step = starting_global_step
-    best_val_loss = starting_best_val_loss
-    best_epoch = starting_epoch
-    warned = False
+    # Optimizer-step granularity for progress/logging
+    steps_per_epoch: int = (len(dataloader) + grad_accum_steps - 1) // grad_accum_steps
 
-    amp_enabled = amp_dtype is not None
-    autocast_dtype = torch.bfloat16 if amp_dtype == "bf16" else torch.float16 if amp_dtype == "fp16" else torch.float32
+    # assume model is already on the correct device and wrapped (eg DDP) by caller
+    model.train()
 
-    with progress_bar:
+    global_step: int = starting_global_step
+    best_val_loss: float = starting_best_val_loss
+    best_epoch: int = starting_epoch
+    warned_mps_scale: bool = False
+
+    _null_progress = NullProgress()
+    pb = progress_bar if progress_bar is not None else _null_progress
+
+    with pb:
         for epoch in range(starting_epoch, n_epochs + 1):
             ctx.barrier()
-            epoch_total_loss = 0.0
-            epoch_batches = 0
+
             if os.environ.get("HSPN_PRECISE_TIMING", False):
                 ctx.sync()
-            if ctx.is_distributed and (set_epoch := getattr(dataloader.sampler, "set_epoch", lambda _: None)):
-                set_epoch(epoch)
-            epoch_start_time = time.time()
 
-            task = progress_bar.add_task(f"Train Epoch {epoch}", total=len(dataloader))
-            optimizer.zero_grad()
+            # Make sure shuffling differs across epochs in distributed mode
+            if ctx.is_distributed and (set_epoch := getattr(dataloader.sampler, "set_epoch", None)):
+                set_epoch(epoch)
+
+            epoch_start_time: float = time.time()
+            task_id = pb.add_task(f"Train Epoch {epoch}", total=steps_per_epoch)
+            optimizer.zero_grad(set_to_none=True)
+
+            # Example-weighted accumulators over the entire epoch (device tensors)
+            epoch_loss_num = torch.zeros((), device=device, dtype=torch.float64)  # sum(loss * n)
+            epoch_loss_den = torch.zeros((), device=device, dtype=torch.float64)  # sum(n)
+
+            # Per-log-window accumulators that reset each time we log at optimizer-step cadence
+            window_loss_num = torch.zeros((), device=device, dtype=torch.float32)
+            window_loss_den = torch.zeros((), device=device, dtype=torch.float32)
+
+            opt_steps: int = 0  # steps taken in this epoch
 
             for i, (*batch,) in enumerate(dataloader, start=1):
                 *inputs, target = batch
 
-                pass_ctx = ExitStack()
-                pass_ctx.enter_context(torch.autocast(device.type, dtype=autocast_dtype, enabled=amp_enabled))
-                # Sync DDP only on last microbatch
-                if hasattr(model, "no_sync") and (i % grad_accum_steps != 0) and (i != len(dataloader)):
-                    pass_ctx.enter_context(model.no_sync())
+                # Autocast and optional DDP no_sync for microbatches before the last in window
+                with ExitStack() as pass_ctx:
+                    pass_ctx.enter_context(torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled))
+                    if hasattr(model, "no_sync") and (i % grad_accum_steps != 0) and (i != len(dataloader)):
+                        pass_ctx.enter_context(getattr(model, "no_sync")())
 
-                with pass_ctx:
                     preds = model(*[x.to(device, non_blocking=False) for x in inputs])
                     loss = torch.nn.functional.mse_loss(preds, target.to(device), reduction="mean")
                     scaled_loss = loss / grad_accum_steps
 
-                for e in inputs:
-                    del e
-                del target
                 scaler.scale(scaled_loss.float()).backward()
 
-                if device.type == "mps" and hasattr(scaler, "_scale") and not warned:
-                    logger.warning(
-                        "Patching scaler to avoid fp64 call on MPS. You might also need to set "
-                        '`PYTORCH_ENABLE_MPS_FALLBACK="1"`'
-                    )
-                    warned = True
-                    scaler._scale.double = scaler._scale.float  # type: ignore
+                # mps scaler patch
+                if (device.type == "mps") and hasattr(scaler, "_scale") and not warned_mps_scale:
+                    warned_mps_scale = True
+                    # avoid accidental fp64 call path on mps
+                    scaler._scale.double = scaler._scale.float
 
-                epoch_batches += 1
-                epoch_total_loss += loss.item()
+                # derive sample counts for weighting, even if target doesnt have explicit batch dim
+                bs: int = int(getattr(target, "shape", (1,))[0]) if hasattr(target, "shape") and getattr(target, "ndim", 0) > 0 else 1
 
-                if i % grad_accum_steps == 0:
+                epoch_loss_num += loss.detach().to(torch.float64) * bs
+                epoch_loss_den += bs
+                window_loss_num += loss.detach() * bs
+                window_loss_den += bs
+
+                # Free microbatch
+                del inputs
+                del target
+
+                # step boundary
+                if (i % grad_accum_steps) == 0:
                     if grad_clip_norm:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+
                     scaler.step(optimizer)
                     scaler.update()
-                    if scheduler:
+                    if scheduler is not None:
                         scheduler.step()
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)
+
                     global_step += 1
-                    progress_bar.update(task, advance=1)
+                    opt_steps += 1
+                    pb.update(task_id, advance=1)
 
-                    if i > 0 and i % (log_interval / grad_accum_steps) == 0:
-                        logger.info(
-                            f"Epoch {epoch} [batch {i}/{len(dataloader)}] "
-                            f"Loss: {loss.item():.6f}, "
-                            f"Epoch Time Elapsed: {time.time() - epoch_start_time:.3f}s"
-                        )
+                    # Log at optimizer cadence, triggers a sync
+                    if (opt_steps % max(1, log_interval)) == 0:
+                        buf = torch.stack([window_loss_num, window_loss_den])
+                        Context.all_reduce_(buf, op=torch.distributed.ReduceOp.SUM)
+                        global_window_avg = (buf[0] / buf[1].clamp_min(1)).item()
 
-            # Handle tail flush
-            if len(dataloader) % grad_accum_steps != 0:
+                        if ctx.is_main_process:
+                            logger.info(
+                                f"Epoch {epoch} [step {opt_steps}/{steps_per_epoch}] "
+                                f"Global Loss(avg over window): {global_window_avg:.6f} "
+                                f"Elapsed: {time.time() - epoch_start_time:.3f}s"
+                            )
+
+                        # reset window accumulators
+                        window_loss_num.zero_()
+                        window_loss_den.zero_()
+
+            # Tail flush if the epoch ended mid-accum window
+            if (len(dataloader) % grad_accum_steps) != 0:
                 if grad_clip_norm:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+
                 scaler.step(optimizer)
                 scaler.update()
-                if scheduler:
+                if scheduler is not None:
                     scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
+
                 global_step += 1
+                opt_steps += 1
+                pb.update(task_id, advance=1)
 
-            avg_loss = epoch_total_loss / epoch_batches
+                # reset window accumulators
+                window_loss_num.zero_()
+                window_loss_den.zero_()
+
+            # Epoch end - compute global example-weighted average
+            epoch_buf = torch.stack([epoch_loss_num, epoch_loss_den])
+            Context.all_reduce_(epoch_buf, op=torch.distributed.ReduceOp.SUM)
+            global_avg_loss: float = (epoch_buf[0] / epoch_buf[1].clamp_min(1)).item()
+
+            # make sure we have globally consistent global_step by broadcast
+            if ctx.is_distributed:
+                if ctx.is_main_process:
+                    gstep_tensor = torch.tensor([starting_global_step + (epoch * steps_per_epoch)], device=device, dtype=torch.int64)
+                else:
+                    gstep_tensor = torch.zeros((1,), device=device, dtype=torch.int64)
+                Context.broadcast_(gstep_tensor, src=0)
+                global_step = int(gstep_tensor.item())
+
             if tracker and ctx.is_main_process:
-                log_context = {"phase": "train"} | (extra_tracker_context or {})
-                tracker.track(epoch, "epoch", global_step, context=log_context)
-                tracker.track(epoch_total_loss, "loss", global_step, context=log_context)
-                tracker.track(avg_loss, "avg_loss", global_step, context=log_context)
+                log_ctx: Dict[str, Any] = {"phase": "train"} | (extra_tracker_context or {})
+                tracker.track(epoch, "epoch", global_step, context=log_ctx)
+                tracker.track(float(epoch_buf[0].item()), "loss", global_step, context=log_ctx)  # total (example-weighted sum)
+                tracker.track(global_avg_loss, "avg_loss", global_step, context=log_ctx)
+                lr: float = (scheduler.get_last_lr()[0] if scheduler is not None else optimizer.param_groups[0]["lr"])
+                tracker.track(lr, "learning_rate", global_step, context=log_ctx)
 
-                current_lr = scheduler.get_last_lr()[0] if scheduler else optimizer.param_groups[0]["lr"]
-                tracker.track(current_lr, "learning_rate", global_step, context=log_context)
-
-            progress_bar.remove_task(task)
+            pb.remove_task(task_id)
             ctx.barrier()
 
             if ctx.is_main_process:
                 if os.environ.get("HSPN_PRECISE_TIMING", False):
                     ctx.sync()
                 logger.info(
-                    f"Train Epoch: {epoch} completed in {time.time() - epoch_start_time:.3f}s "
-                    f"Batches: {epoch_batches}, Avg Batch Total Loss: {avg_loss:.6f}"
+                    f"Train Epoch {epoch} done in {time.time() - epoch_start_time:.3f}s "
+                    f"OptimSteps: {opt_steps}/{steps_per_epoch}  "
+                    f"Global Avg Loss: {global_avg_loss:.6f}"
                 )
 
-            # Val set
-            val_loss = None
+            # Validation
             if val_dataloader:
                 with ctx.model_eval(model):
                     val_loss = evaluate(model, val_dataloader, device)
-                    logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
-
                 if ctx.is_main_process:
+                    logger.info(f"Validation Relative L2 Loss: {val_loss:.6f}")
                     if tracker:
-                        log_context = extra_tracker_context or {}
-                        log_context["phase"] = "val"
-                        tracker.track(val_loss, "relative_l2_loss", global_step, context=log_context)
+                        vctx: Dict[str, Any] = {"phase": "val"} | (extra_tracker_context or {})
+                        tracker.track(val_loss, "relative_l2_loss", global_step, context=vctx)
 
+                    # Best ckpt on rank-0
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         best_epoch = epoch
@@ -360,7 +415,6 @@ def train(
 def _main(cfg: DictConfig) -> float:
     ctx = Context()
 
-    rank, world_size = ctx.rank, ctx.world_size
     if ctx.is_distributed:
         set_log_context(rank=ctx.rank, world_size=ctx.world_size)
         install_global_log_context()
@@ -384,16 +438,21 @@ def _main(cfg: DictConfig) -> float:
     try:
         config = TrainConfig.from_cfg(cfg)
 
-        device = torch.device(rank if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
+            device = torch.device("cuda", ctx.rank)
             torch.cuda.set_device(device)
-        logger.info(f"Using {device}/{torch.get_device_module(device).device_count()}")
+        else:
+            device = torch.device("cpu")
+        n_devices = torch.get_device_module(device).device_count()
+        logger.info(f"Using {device}/{n_devices}")
 
         model = config.model.train()
-        if world_size > 1:
+        if ctx.world_size > 1:
             model = nn.parallel.DistributedDataParallel(model)
         else:
             model.to(device)
+
+        config.model = model # in case its referenced by anyone (although not the intended design)
 
         scaler = GradScaler(device=device.type, enabled=config.grad_scaling or False)
 
@@ -442,7 +501,7 @@ def _main(cfg: DictConfig) -> float:
             progress_bar = NullProgress()
 
         best_val_loss, best_epoch, _ = train(
-            model=config.model,
+            model=model,
             dataloader=config.dataloader,
             val_dataloader=config.val_dataloader,
             optimizer=config.optimizer,
