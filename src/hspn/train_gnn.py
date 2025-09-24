@@ -133,35 +133,50 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
             tracker["hparams"] = cfg_dict
         for epoch in range(1, config.n_epochs + 1):
             model.train()
-            train_losses = []
+            train_losses: list[float] = []
+
             for data, single_step_y, push_forward_y in train_loader:
                 data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
-                target = push_forward_y.to(device) if push_forward_y is not None else single_step_y.to(device)
+
+                # pushforward rollout
+                push_forward_count = data.get("push_forward_count", 0)
+                with torch.inference_mode():
+                    for _ in range(push_forward_count):
+                        data["field_data"] = model(**data).detach()
+
+                target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
 
                 optimizer.zero_grad()
                 preds = model(**data)
                 loss = criterion(preds, target)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1e8)
                 optimizer.step()
+
                 train_losses.append(loss.item())
 
             train_loss = sum(train_losses) / len(train_losses)
             if tracker:
                 tracker.track(train_loss, name="loss/train", step=epoch, context="train")
 
-            # validation
             model.eval()
-            val_losses = []
+            val_losses: list[float] = []
             with torch.no_grad():
                 for data, single_step_y, push_forward_y in val_loader:
                     data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
-                    target = push_forward_y.to(device) if push_forward_y is not None else single_step_y.to(device)
-                    preds = model(**data)
-                    val_losses.append(criterion(preds, target).item())
+
+                    push_forward_count = data.get("push_forward_count", 0)
+                    for _ in range(push_forward_count + 1):
+                        data["field_data"] = model(**data)
+
+                    y_hat = data["field_data"]
+                    val_loss = criterion(y_hat, push_forward_y.to(device))
+                    val_losses.append(val_loss.item())
+
             val_loss = sum(val_losses) / len(val_losses)
             if tracker:
                 tracker.track(val_loss, name="loss/val", step=epoch, context="train")
-            logger.info("[%d] val loss: %d", epoch, val_loss)
+            logger.info("[%d] val loss: %f", epoch, val_loss)
 
             scheduler.step()
 
@@ -170,11 +185,7 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
 
                 metrics = {"loss": train_loss, "val_loss": val_loss}
                 with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-                    checkpoint = None
-                    from hspn.train_utils import (
-                        # load_checkpoint, TODO:
-                        save_checkpoint,
-                    )
+                    from hspn.train_utils import save_checkpoint
 
                     save_checkpoint(
                         Path(temp_checkpoint_dir, "model.pt"),
@@ -183,13 +194,9 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                         scheduler=scheduler,
                         gradscaler=None,
                         epoch=epoch,
-                        metrics={
-                            "epoch": epoch,
-                        },
+                        metrics={"epoch": epoch},
                     )
-
                     checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
-
                     train.report(metrics, checkpoint=checkpoint)
     except:
         logger.exception("Failed")
