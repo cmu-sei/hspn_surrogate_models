@@ -1,0 +1,100 @@
+# Dataset ----------------------------------------------------------------------
+dataset:
+  train_datasets:
+    - root: /data/reprocessed
+      field_dir:
+        - foo
+        - bar
+
+  valid_datasets:
+    - root: /data/reprocessed
+      field_dir:
+        - baz
+
+  fields: ["Density"]
+
+  time_minimum: 100
+  time_maximum: 499
+
+  bounds:
+    x_min: -0.5
+    x_max: 3.5
+    y_min: -1.0
+    y_max: 1.0
+
+  bundle: 2
+  push_forward: 2
+  noise: 1e-4
+  dimensions: 2
+  n_params: 0
+  bundle_style: non_overlapping
+  max_samples_per_field_dir: -1
+  update_node_tags: [0]
+
+# Model ------------------------------------------------------------------------
+model:
+  activation: silu
+  hidden_channels: 32
+  mlp_width: 40
+  mlp_depth: 3
+  dropout: 0.0
+  n_processing_blocks: 9
+  checkpointed: false
+  reweight: false
+
+# Training ---------------------------------------------------------------------
+seed: 42
+n_epochs: 201
+learning_rate: 9.99e-3
+batch_size: 3
+log_interval: 10
+
+# Dataloaders ------------------------------------------------------------------
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+val_dataloader:
+  _target_: torch.utils.data.DataLoader
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+# Optimizer ------------------------------------------------------------------
+optimizer:
+  _target_: schedulefree.AdamWScheduleFree
+  lr: ${learning_rate}
+
+# Scheduler --------------------------------------------------------------------
+scheduler:
+  _target_: torch.optim.lr_scheduler.ConstantLR
+  factor: 1.0
+  total_iters: 1
+
+# Paths / Misc
+checkpoint_dir: ./models/ckpt
+results_dir: ./models/
+tag: colin
+
+# Optional tracker (Aim Run or null)
+# tracker: null # set to null to disable
+tracker:
+  _target_: aim.Run
+  repo: .
+  experiment: ${hydra:job.config_name}
+
+# # TODO: Rollout
+# rollout:
+#   start: 0
+#   length: 100
+#   show_ground_truth: true
+
+# trainer: null
+trainer:
+  num_workers: 1
+  use_gpu: true
+  resources_per_worker: { "CPU": 8, "GPU": 1 }
