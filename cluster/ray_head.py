@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Primary driver for starting ray on slurm.
 
+Requires Python >= 3.8 no dependencies.
+
 # Bare metal
 $ salloc --qos=standard --account=<account> --time=01:00:00 --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=32G
 # Now on assigned node
@@ -17,16 +19,14 @@ $ salloc --time=01:00:00 --nodes=1 --ntasks=1 --cpus-per-task=8 --mem=32G --acco
 $ cd "$SLURM_SUBMIT_DIR"
 
 # Start Ray head inside a SIF.
-# --container=auto activates container mode when --sif is provided.
+# Container mode is automatically activated when --sif is provided.
 $ python -u cluster/ray_head.py \
-    --container auto \
     --sif /path/to/hspn.sif \
     --project-root "$SLURM_SUBMIT_DIR" \
     --ray-tmpdir "$SLURM_SUBMIT_DIR/.ray_tmp" \
     --dry-run
 
 $ python -u cluster/ray_head.py \
-    --container auto \
     --sif /path/to/hspn.sif \
     --project-root "$SLURM_SUBMIT_DIR" \
     --ray-tmpdir "$SLURM_SUBMIT_DIR/.ray_tmp"
@@ -53,9 +53,10 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from shutil import which
-from typing import TYPE_CHECKING, Any, Dict, Final, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Final, Iterable, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from types import FrameType
@@ -66,8 +67,6 @@ DEFAULT_IFACE_ORDER: Final[Tuple[str, ...]] = ("ib0", "enp1s0f0", "enp1s0f1", "e
 
 _SIOCGIFADDR: Final[int] = 0x8915  # <linux/sockios.h>
 _IFNAMSIZ: Final[int] = 16
-
-ContainerKind = Literal["none", "apptainer", "singularity", "auto"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +80,11 @@ logging.basicConfig(
 
 logging.getLogger().handlers[0].setLevel(logging.DEBUG)
 logging.getLogger().handlers[1].setLevel(logging.WARNING)
+
+
+class ContainerRuntime(str, Enum):
+    APPTAINER = "apptainer"
+    SINGULARITY = "singularity"
 
 
 @dataclass(frozen=True)
@@ -234,19 +238,23 @@ def maybe_load_module(name: str) -> bool:
         return True
 
 
-def resolve_container_exe(preferred: Sequence[str]) -> Optional[str]:
-    """Find apptainer/singularity, attempt module load if missing."""
+def resolve_container_exe(
+    preferred: Sequence[ContainerRuntime],
+) -> Optional[Tuple[ContainerRuntime, str]]:
+    """Find a container runtime by name.
+
+    For each item, attempts to load module of the same name if not found the first time.
+
+    Returns: Tuple of (runtime, path) if found, None otherwise.
+    """
     for exe in preferred:
-        path = which(exe)
-        if path:
-            return exe
-    # Try module load for each, then check again.
-    for exe in preferred:
-        if maybe_load_module(exe):
-            path = which(exe)
-            if path:
-                logging.info(f"Loaded module and found '{exe}' at {path}")
-                return exe
+        if path := which(exe):
+            return exe, path
+        # Try module load, then check again.
+        elif maybe_load_module(exe) and (path := which(exe)):
+            logging.info(f"Loaded module and found '{exe}' at {path}")
+            return exe, path
+
     return None
 
 
@@ -264,109 +272,87 @@ def ensure_cuda() -> None:
 
 
 def build_container_prefix(
-    kind: ContainerKind,
-    sif: Optional[Path],
+    sif: Path,
     project_root: Path,
     ray_tmpdir: Path,
     gpu: bool,
 ) -> Tuple[List[str], Dict[str, Any]]:
-    """Return (argv_prefix, meta) for container execution."""
-    meta: Dict[str, Any] = {"enabled": False}
+    """Return (argv_prefix, meta) for container execution.
 
-    if kind == "none":
-        return [], meta
+    Attempts to find apptainer or singularity (in that order).
+    """
+    result = resolve_container_exe((ContainerRuntime.APPTAINER, ContainerRuntime.SINGULARITY))
+    if not result:
+        raise SystemExit("Could not find apptainer or singularity. Please install one or load via module.")
 
-    # 'auto' => enable only if SIF provided
-    if kind == "auto":
-        if sif is None:
-            return [], {"enabled": False, "reason": "no SIF provided"}
-        resolved = resolve_container_exe(("apptainer", "singularity"))
-        if not resolved:
-            logging.warning("Container 'auto' requested but no apptainer/singularity found, running bare.")
-            return [], {"enabled": False, "reason": "container runtime not found"}
-        kind = "apptainer" if resolved == "apptainer" else "singularity"  # narrow type
+    runtime, exe_path = result
 
-    if kind in ("apptainer", "singularity"):
-        exe = resolve_container_exe((kind,))
-        if not exe:
-            logging.warning(f"Requested container '{kind}' but not found on PATH, trying module load.")
-            exe = resolve_container_exe((kind,))
-        if not exe:
-            logging.warning(f"Could not find '{kind}'. Running bare.")
-            return [], {"enabled": False, "reason": f"{kind} missing"}
+    # Ensure paths exist
+    project_root = project_root.resolve()
+    ray_tmpdir = ray_tmpdir.resolve()
+    ray_tmpdir.mkdir(parents=True, exist_ok=True)
 
-        if sif is None:
-            raise SystemExit(f"--sif is required when --container {kind} is used.")
-
-        # Ensure paths exist
-        project_root = project_root.resolve()
-        ray_tmpdir = ray_tmpdir.resolve()
-        ray_tmpdir.mkdir(parents=True, exist_ok=True)
-
-        nv_flag: List[str] = ["--nv"] if gpu else []
-        prefix: List[str] = [
-            exe,
-            "exec",
-            *nv_flag,
-            "--bind",
-            f"{project_root!s}",
-            "--pwd",
-            f"{project_root!s}",
-            "--no-home",
-            "--writable-tmpfs",
-            "--bind",
-            f"{ray_tmpdir!s}:{ray_tmpdir!s}",
-            str(sif),
-        ]
-        meta = {
-            "enabled": True,
-            "runtime": exe,
-            "sif": str(sif),
-            "binds": [str(project_root), f"{ray_tmpdir!s}:{ray_tmpdir!s}"],
-            "nv": gpu,
-        }
-        return prefix, meta
-
-    # Fallback
-    return [], meta
+    nv_flag = ["--nv"] if gpu else []
+    prefix = [
+        exe_path,
+        "exec",
+        *nv_flag,
+        "--bind",
+        str(project_root),
+        "--pwd",
+        str(project_root),
+        "--no-home",
+        "--writable-tmpfs",
+        "--bind",
+        f"{ray_tmpdir}:{ray_tmpdir}",
+        str(sif),
+    ]
+    meta = {
+        "enabled": True,
+        "runtime": runtime.value,
+        "exe_path": exe_path,
+        "sif": str(sif),
+        "binds": [str(project_root), f"{ray_tmpdir}:{ray_tmpdir}"],
+        "nv": gpu,
+    }
+    return prefix, meta
 
 
 def start_ray(
     ip: str,
     port: int,
-    container_prefix: Optional[Sequence[str]] = None,
+    prefix: Sequence[str],
     env: Optional[Dict[str, str]] = None,
     num_cpus: Optional[int] = None,
     num_gpus: Optional[int] = None,
     head: bool = True,
 ) -> subprocess.Popen[bytes]:
-    """Launch Ray subprocess (optionally inside container) inheriting tty."""
-    cmd: List[str] = list(container_prefix or [])
-    cmd = [
-        "uv",
-        "run",
+    """Launch Ray subprocess with given prefix (which may include container commands)."""
+    cmd: List[str] = list(prefix)
+    cmd.extend([
         "ray",
         "start",
         f"--node-ip-address={ip}",
         f"--port={port}",
         "--block",
-    ]
+    ])
     if num_cpus:
         cmd.append(f"--num-cpus={num_cpus}")
     if num_gpus:
         cmd.append(f"--num-gpus={num_gpus}")
     if head:
-        cmd.extend(("--head", "--blocK"))
+        cmd.extend(("--head", "--block"))
     logging.info("Exec: " + " ".join(shlex.quote(c) for c in cmd))
     return subprocess.Popen(cmd, env=env)
 
 
-def ray_stop(ray_address: str, container_prefix: Optional[Sequence[str]], env: Dict[str, str]) -> None:
+def ray_stop(ray_address: str, prefix: Sequence[str], env: Dict[str, str]) -> None:
     """Best-effort cleanup. Errors are ignored."""
     with contextlib.suppress(Exception):
-        prefix = container_prefix or []
+        cmd = list(prefix)
+        cmd.extend(["ray", "stop", f"--address={ray_address}", "--force"])
         subprocess.run(
-            [*prefix, "uv", "run", "ray", "stop", f"--address={ray_address}", "--force"],
+            cmd,
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -402,8 +388,8 @@ def forward_signals(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="ray_ctrl",
-        description="Launch a Ray cluster in a SLURM job, metadata is stored in ray-head.json.",
+        prog="ray_head",
+        description="Launch a Ray head node in a SLURM job, metadata is stored in ray-head.json.",
     )
     parser.add_argument("--port", type=int, default=6379, help="Ray GCS port (default: 6379).")
     parser.add_argument(
@@ -418,50 +404,58 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--gpus", type=int, required=False, default=None, help="Override --num-gpus.")
 
     parser.add_argument(
-        "--container",
-        type=str,
-        choices=["none", "apptainer", "singularity", "auto"],
-        default="none",
-        help="Container runtime (default: none). Use 'auto' to use container only if --sif is provided.",
-    )
-    parser.add_argument(
         "--container-cmd",
         type=str,
         default=None,
-        help="Use a custom container command. Will be used as a prefix.",
+        help="Use a custom container command as prefix. When specified, --sif, --project-root, and "
+        "--ray-tmpdir are ignored (you must handle all container setup in your command). "
+        "Example: 'apptainer exec --nv --bind /data:/data my.sif'",
+    )
+    parser.add_argument(
+        "--prefix",
+        type=str,
+        default="uv run",
+        help="Command prefix before 'ray'. Default: 'uv run'. "
+        "Examples: 'python3', '' (blank for direct ray invocation).",
     )
     parser.add_argument(
         "--sif",
         type=Path,
         default=None,
-        help="Path to SIF image (required if --container is apptainer/singularity, used if --container=auto).",
+        help="Path to SIF image. When provided, apptainer/singularity will be automatically used. "
+        "Mutually exclusive with --container-cmd.",
     )
     parser.add_argument(
         "--project-root",
         type=Path,
         default=None,
-        help="Project root to bind and use as working dir inside container. Defaults to $PROJECT_ROOT or "
-        "$SLURM_SUBMIT_DIR or CWD.",
+        help="Project root to bind and use as working dir inside container. Only used with --sif. "
+        "Defaults to $PROJECT_ROOT or $SLURM_SUBMIT_DIR or CWD.",
     )
     parser.add_argument(
         "--ray-tmpdir",
         type=Path,
         default=None,
-        help="Host path to use for RAY_TMPDIR (bind-mounted if containerized). "
+        help="Host path to use for RAY_TMPDIR (bind-mounted if containerized). Only used with --sif. "
         "Defaults to $RAY_TMPDIR or <project-root>/.ray_tmp.",
-        # "Can be <src> or <src>:<dest>. "
     )
 
     parser.add_argument("--dry-run", action="store_true", help="Compute values, write JSON, exit.")
     args = parser.parse_args(argv)
 
-    if args.container in ("none", "auto") and not which("ray"):
+    # Validation: --container-cmd is mutually exclusive with container-related args
+    if args.container_cmd:
+        if args.sif:
+            raise ValueError("--container-cmd and --sif are mutually exclusive")
+        if args.project_root is not None:
+            logging.warning("--project-root is ignored when using --container-cmd")
+        if args.ray_tmpdir is not None:
+            logging.warning("--ray-tmpdir is ignored when using --container-cmd")
+
+    if args.sif is None and not which("ray"):
         logging.warning(
-            "'ray' not found on PATH, if you intend to run inside container, "
-            "pass --container and --sif or --container-cmd.",
+            "'ray' not found on PATH. If you intend to run inside container, pass --sif.",
         )
-    if args.container_cmd and (args.container != "none" or args.sif):
-        raise ValueError("--container-cmd option is mututally exclusive with --container/--sif")
 
     preferred = [x.strip() for x in args.iface_order.split(",") if x.strip()]
     ip = resolve_head_ip(preferred)
@@ -475,24 +469,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if enable_gpu:
         ensure_cuda()
 
-    project_root = (
-        args.project_root or Path(os.environ.get("PROJECT_ROOT") or os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd())
-    ).resolve()
-    ray_tmpdir = (args.ray_tmpdir or Path(os.environ.get("RAY_TMPDIR") or (project_root / ".ray_tmp"))).resolve()
+    # Only usey these paths if needed (i.e., not using --container-cmd)
+    if args.container_cmd:
+        # User takes full responsibility for container setup
+        project_root = Path.cwd().resolve()
+        ray_tmpdir = Path(os.environ.get("RAY_TMPDIR", ".ray_tmp")).resolve()
+    else:
+        project_root = (
+            args.project_root
+            or Path(os.environ.get("PROJECT_ROOT") or os.environ.get("SLURM_SUBMIT_DIR") or os.getcwd())
+        ).resolve()
+        ray_tmpdir = (args.ray_tmpdir or Path(os.environ.get("RAY_TMPDIR") or (project_root / ".ray_tmp"))).resolve()
+
     ray_tmpdir.mkdir(parents=True, exist_ok=True)
 
     container_prefix: Optional[List[str]] = None
-    cmeta = {}
+    cmeta: Dict[str, Any] = {"enabled": False}
+    prefix: List[str] = shlex.split(args.prefix)
+
     if args.container_cmd is not None:
         container_prefix = shlex.split(args.container_cmd)
-    if not args.container_cmd:
+        cmeta = {"enabled": True, "custom_cmd": args.container_cmd}
+    elif args.sif is not None:
         container_prefix, cmeta = build_container_prefix(
-            kind=args.container,
             sif=args.sif,
             project_root=project_root,
             ray_tmpdir=ray_tmpdir,
             gpu=enable_gpu,
         )
+
+    if container_prefix:
+        prefix = [*container_prefix, *prefix]
 
     # env for spawned process
     env: Dict[str, str] = dict(os.environ)
@@ -541,7 +548,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 port=port,
                 num_cpus=num_cpus,
                 num_gpus=num_gpus,
-                container_prefix=container_prefix,
+                prefix=prefix,
                 env=env,
                 head=True,
             )
@@ -551,7 +558,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         finally:
             with contextlib.suppress(Exception):
                 time.sleep(1.0)
-                ray_stop(ray_address, container_prefix=container_prefix, env=env)
+                ray_stop(ray_address, prefix=prefix, env=env)
     finally:
         with contextlib.suppress(Exception):
             args.pidfile.unlink(missing_ok=True)
