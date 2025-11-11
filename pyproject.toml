@@ -34,7 +34,6 @@ hpo = [
 gnn = [
     "ray[train]>=2.44.0",
     "schedulefree>=1.4.1",
-    "tensorboard>=2.20.0",
 ]
 
 [project.scripts]

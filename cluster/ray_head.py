@@ -334,7 +334,6 @@ def start_ray(
         "start",
         f"--node-ip-address={ip}",
         f"--port={port}",
-        "--block",
     ])
     if num_cpus:
         cmd.append(f"--num-cpus={num_cpus}")

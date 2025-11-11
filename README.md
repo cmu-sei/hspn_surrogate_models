@@ -5,8 +5,11 @@
 ```sh
 git clone <url>/hspn_surrogate_models
 cd hspn_surrogate_models
-pip install -e .
+uv sync # or pip install -e .
 ```
+
+> [!NOTE]
+> On some systems you may need to set higher timeout and retries if you get sync errors. E.g., `UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=6`
 
 ## Quickstart
 
@@ -88,15 +91,9 @@ hspn-<train/prepare/etc> --cfg=job --resolve # causes variable references in the
 
 ## Additional CLI Features
 
-Each hspn CLI application can be invoked three ways. Using the `prepare` application as an example:
-
-1. Directly: `python src/hspn/prepare.py` Cons: need the exact filepath so it depends on what your current working directory is. Pros: support shell completion so good for interactive experimentation, see below.
-2. Module: `python -m hspn.prepare` Cons: No shell completion. Pros: Can be run anywhere as long as `hspn` is installed.
-3. Shortcut: `hspn-prepare` this is an alias for option (2) and is installed by pip in `$HOME/.local/bin/`. Cons: No shell completion, might not be optimal in containers where `$HOME/.local/bin` is not in `$PATH`. Pros: Can be run anywhere as long as `hspn` is installed, easy to discover `hspn` commands via `hspn-<TAB><TAB>`.
-
 ### Shell autocompletion
 
-For interactive experimentation it is recommended to use option (1) above and take advantage of shell completion which can be installed with:
+For interactive experimentation it is recommended take advantage of shell completion which can be installed with:
 
 ```sh
 hspn-<train/prepare/etc> --shell-completion install=<bash/zsh/fish>
@@ -107,17 +104,26 @@ hspn-<train/prepare/etc> -sc install=$(basename $SHELL)
 To install train and prepare (could be placed in `~/.zshrc`/`~/.bashrc`/etc):
 
 ```sh
-hspn-train -sc install=$(basename $SHELL)
-hspn-prepare -sc install=$(basename $SHELL)
+eval "$(hspn-train -sc install=$(basename $SHELL))"
+eval "$(hspn-prepare -sc install=$(basename $SHELL))"
 ```
 
-Now, you can get autocomplete while setting configuration options! Remember that you must specify the path to the file for autocomplete to work. Try:
+Now, you can get autocomplete while setting configuration options. Try:
 
 ```sh
-python src/hspn/train.py model.<TAB><TAB>
+hspn-train model.<TAB><TAB>
 ```
 
 > Note: depending on your machine completion may lag a bit.
+
+
+## uv
+
+Run a task that requires a dependency group,
+
+```sh
+uv run --extra gnn -m hspn.train_gnn
+```
 
 ## Troubleshooting
 

@@ -1,17 +1,11 @@
 import os
 from pathlib import Path
-from typing import Optional
 import logging
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from schedulefree import AdamWScheduleFree
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset, Sampler, DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from torch.utils.data import Sampler
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +34,7 @@ class GraphBatchSampler(Sampler):
         print(f"Created {len(self.groups)} groups:")
         for key, indices in self.groups.items():
             pf, n_nodes, n_edges = key
-            print(
-                f"  PF={pf}, Nodes={n_nodes}, Edges={n_edges}: {len(indices)} samples"
-            )
+            print(f"  PF={pf}, Nodes={n_nodes}, Edges={n_edges}: {len(indices)} samples")
 
     def __iter__(self):
         # Process each group
@@ -98,9 +90,7 @@ class GradientMonitor:
             n: number of top parameters to return
             metric: which metric to sort by ('max', 'mean', 'variance', 'norm')
         """
-        sorted_params = sorted(
-            self.gradient_stats.items(), key=lambda x: x[1][metric], reverse=True
-        )
+        sorted_params = sorted(self.gradient_stats.items(), key=lambda x: x[1][metric], reverse=True)
         return sorted_params[:n]
 
     def print_top_gradients(self, n=10, metric="max"):
@@ -215,9 +205,7 @@ def pyg_style_collate_fn(batch):
     single_step_y = torch.cat([data["single_step_y"] for data in batch], dim=0)
 
     pf_list = [
-        data["push_forward_y"]
-        for data in batch
-        if "push_forward_y" in data and data["push_forward_y"].numel() > 0
+        data["push_forward_y"] for data in batch if "push_forward_y" in data and data["push_forward_y"].numel() > 0
     ]
     push_forward_y = torch.cat(pf_list, dim=0) if pf_list else None
 
@@ -238,6 +226,3 @@ def pyg_style_collate_fn(batch):
     }
 
     return input_dict, single_step_y, push_forward_y
-
-
-
