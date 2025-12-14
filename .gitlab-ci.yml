@@ -1,0 +1,36 @@
+image: ubuntu:22.04
+
+stages:
+  - build
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+
+build:
+  stage: build
+  script:
+    - apt-get update
+    - apt-get install -y curl python3 python3-pip
+
+    - curl -fsSL https://bun.sh/install | bash
+    - export BUN_INSTALL="$HOME/.bun"
+    - export PATH="$BUN_INSTALL/bin:$PATH"
+
+    - python3 -m pip install --upgrade pip
+    - pip install griffe==1.7.3
+    - pip install -e .
+
+    - cd docs
+    - bun install --frozen-lockfile
+    - bun run build
+
+    - cd ..
+    - mv docs/docs/dist public
+
+  artifacts:
+    paths:
+      - public
+
+  only:
+    - main
+    - master
