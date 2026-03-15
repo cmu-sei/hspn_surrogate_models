@@ -29,6 +29,9 @@ class MeshDataset(Dataset):
         push_forward_count: int = 0,
         bundle: int = 1,
         bundle_style: str = "non-overlapping",
+        node_file: Optional[str] = None,
+        edge_file: Optional[str] = None,
+
         **kwargs,  # Ignore extra params
     ):
         if tmin is None or tmax is None:
@@ -45,15 +48,21 @@ class MeshDataset(Dataset):
         self.push_forward_count = push_forward_count
         self.bundle = bundle
         self.bundle_style = bundle_style
+        
+
+        self.node_file = node_file or f"{self.root}/nodes.npy"
+        self.edge_file = edge_file or f"{self.root}/edges_cell.npy"
         self._load_all()
 
     def _load_all(self):
         """Load everything."""
         # Load graph
-        pos_data = np.load(f"{self.root}/nodes.npy")
+        pos_data = np.load(self.node_file)
+        #pos_data = np.load(f"{self.root}/nodes.npy")
         x, y = pos_data["X"], pos_data["Y"]
         node_types = pos_data["node_type"]
-        edges = np.load(f"{self.root}/edges_cell.npy").T
+        edges = np.load(self.edge_file).T
+        #edges = np.load(f"{self.root}/edges_cell.npy").T
 
         # Crop if needed
         if any(b is not None for b in self.bounds):
@@ -296,6 +305,7 @@ def get_dataset(
             "push_forward": old_dataset.get("pushforward", 0),
             "noise": old_dataset.get("noise", 0.0),
             "bounds": {
+                
                 "x_min": old_dataset.get("xmin", -999),
                 "x_max": old_dataset.get("xmax", 999),
                 "y_min": old_dataset.get("ymin", -999),
@@ -333,8 +343,10 @@ def get_dataset(
             "xmax": config.get("bounds", {}).get("x_max", None),
             "ymin": config.get("bounds", {}).get("y_min", None),
             "ymax": config.get("bounds", {}).get("y_max", None),
+            "node_file": dataset_info.get("node_file"),
+            "edge_file": dataset_info.get("edge_file"),
         }
-
+        
         dataset = MeshDataset(**dataset_config)
 
         if train_stats:

@@ -39,6 +39,7 @@ gnn = [
 [project.scripts]
 hspn-preprocess = "hspn.prepare:main"
 hspn-train = "hspn.train:main"
+hspn-train-gnn = "hspn.train_gnn:main" 
 
 [build-system]
 requires = ["hatchling"]

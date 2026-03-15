@@ -9,8 +9,9 @@ import torch
 import torch.nn as nn
 from aim import Run
 from omegaconf import DictConfig, OmegaConf
-from ray.train import Checkpoint, ScalingConfig
+from ray.train import Checkpoint, ScalingConfig, report
 from ray.train.torch import TorchTrainer
+
 from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
@@ -18,11 +19,13 @@ from torch.utils.data import DataLoader
 
 from hspn.context import Context
 from hspn.dogn.data import get_dataset
-from hspn.dogn.epdo import EPDOModel
+from hspn.dogn.classes import get_model
 from hspn.dogn.utils import (
     GraphBatchSampler,
     pyg_style_collate_fn,
 )
+
+from hspn.train_utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -71,23 +74,28 @@ class TrainGNNConfig:
         )
 
         # build model
-        d_inp = len(train_dataset.fields)
-        d_out = len(train_dataset.fields) * train_dataset.bundle
-        n_typ = train_dataset.n_node_types
+                
+        cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+        cfg_dict["fields"] = train_dataset.fields
+        cfg_dict["bundle"] = train_dataset.bundle
+        model = get_model(cfg_dict, n_types=train_dataset.n_node_types)
+        #d_inp = len(train_dataset.fields)
+        #d_out = len(train_dataset.fields) * train_dataset.bundle
+        #n_typ = train_dataset.n_node_types
 
-        model = EPDOModel(
-            d_inp=d_inp,
-            d_out=d_out,
-            n_typ=n_typ,
-            hidden_channels=cfg.model.hidden_channels,
-            mlp_width=cfg.model.mlp_width,
-            mlp_depth=cfg.model.mlp_depth,
-            dropout=cfg.model.dropout,
-            n_processing_blocks=cfg.model.n_processing_blocks,
-            checkpointed=cfg.model.checkpointed,
-            activation=cfg.model.activation,
-            reweight=cfg.model.reweight,
-        )
+        #model = EPDOModel(
+        #    d_inp=d_inp,
+        #    d_out=d_out,
+        #    n_typ=n_typ,
+        #    hidden_channels=cfg.model.hidden_channels,
+        #    mlp_width=cfg.model.mlp_width,
+        #    mlp_depth=cfg.model.mlp_depth,
+        #    dropout=cfg.model.dropout,
+        #    n_processing_blocks=cfg.model.n_processing_blocks,
+        #    checkpointed=cfg.model.checkpointed,
+        #    activation=cfg.model.activation,
+        #    reweight=cfg.model.reweight,
+        #)
 
         # build optimizer + scheduler
         optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
@@ -142,12 +150,17 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                 push_forward_count = data.get("push_forward_count", 0)
                 with torch.inference_mode():
                     for _ in range(push_forward_count):
-                        data["field_data"] = model(**data).detach()
+                                                
+                        data["field_data"], _ = model(**data)
+                        data["field_data"] = data["field_data"].detach()
+                        #data["field_data"] = model(**data).detach()
 
                 target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
 
                 optimizer.zero_grad()
-                preds = model(**data)
+                                
+                preds, _ = model(**data)
+                #preds = model(**data)
                 loss = criterion(preds, target)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1e8)
@@ -167,7 +180,7 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
 
                     push_forward_count = data.get("push_forward_count", 0)
                     for _ in range(push_forward_count + 1):
-                        data["field_data"] = model(**data)
+                        data["field_data"],_ = model(**data)
 
                     y_hat = data["field_data"]
                     val_loss = criterion(y_hat, push_forward_y.to(device))
@@ -180,24 +193,45 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
 
             scheduler.step()
 
+
             if epoch % 10 == 0 and ctx.is_main_process:
-                from ray import train
-
                 metrics = {"loss": train_loss, "val_loss": val_loss}
-                with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-                    from hspn.train_utils import save_checkpoint
-
+                if cfg_dict.get("trainer"):
+                    with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+                        save_checkpoint(
+                            Path(temp_checkpoint_dir, "model.pt"),
+                            model=model, optimizer=optimizer,
+                            scheduler=scheduler, gradscaler=None,
+                            epoch=epoch, metrics={"epoch": epoch},
+                        )
+                        checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+                        report(metrics, checkpoint=checkpoint)
+                else:
+                    config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
                     save_checkpoint(
-                        Path(temp_checkpoint_dir, "model.pt"),
-                        model=model,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        gradscaler=None,
-                        epoch=epoch,
-                        metrics={"epoch": epoch},
+                        config.checkpoint_dir / f"model_epoch{epoch}.pt",
+                        model=model, optimizer=optimizer,
+                        scheduler=scheduler, gradscaler=None,
+                        epoch=epoch, metrics=metrics,
                     )
-                    checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
-                    train.report(metrics, checkpoint=checkpoint)
+            #if epoch % 10 == 0 and ctx.is_main_process:
+            #    from ray import train
+
+            #    metrics = {"loss": train_loss, "val_loss": val_loss}
+            #    with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
+            #        from hspn.train_utils import save_checkpoint
+
+            #        save_checkpoint(
+            #            Path(temp_checkpoint_dir, "model.pt"),
+            #            model=model,
+            #            optimizer=optimizer,
+            #            scheduler=scheduler,
+            #            gradscaler=None,
+            #            epoch=epoch,
+            #            metrics={"epoch": epoch},
+            #        )
+            #        checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
+            #        train.report(metrics, checkpoint=checkpoint)
     except:
         logger.exception("Failed")
         raise

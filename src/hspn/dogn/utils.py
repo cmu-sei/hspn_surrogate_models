@@ -223,6 +223,7 @@ def pyg_style_collate_fn(batch):
         "num_edges": num_edges,
         "num_node_features": num_node_features,
         "num_edge_features": num_edge_features,
+        "dirichlet_masks": None,
     }
 
     return input_dict, single_step_y, push_forward_y

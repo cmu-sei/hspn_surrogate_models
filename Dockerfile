@@ -31,7 +31,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 pip install --cache-dir=/root/.cache/pip --upgrade pip
 constraints=()
 [[ -f /etc/pip/constraint.txt ]] && constraints=(-c /etc/pip/constraint.txt)
-pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
+#pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
+pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e ".[gnn]"
 EOT
 
 RUN echo "root:password" | chpasswd
