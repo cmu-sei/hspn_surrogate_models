@@ -85,7 +85,21 @@ n_epochs: 201
 learning_rate: 9.99e-3
 batch_size: 3
 log_interval: 10
-
+# Loss -------------------------------------------------------------------------
+loss:
+  type: "mse"  # options: "mse", "gradient_weighted", "energy"
+  # gradient_weighted requires ≥2 fields with velocity as the last two.
+  # DO NOT use with single-field datasets like NACA (Density only).
+  gradient_weighted:
+    lambda_gradient: 2.0
+  # energy requires velocity_indices and buoyancy_idx pointing to actual fields.
+  energy:
+    velocity_indices: []      # e.g. [1, 2] for vx, vy
+    buoyancy_idx: null        # e.g. 0 for temperature/density
+    ke_weight: 1.0
+    ape_weight: 1.0
+    pe_min_weight: 1.0
+    monotonic_weight: 0.1
 # Dataloaders ------------------------------------------------------------------
 dataloader:
   _target_: torch.utils.data.DataLoader

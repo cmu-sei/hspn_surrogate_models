@@ -25,6 +25,7 @@ from hspn.dogn.utils import (
     pyg_style_collate_fn,
 )
 
+from hspn.dogn.loss import LossFunction, EnergyLoss, forward_loss
 from hspn.train_utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,37 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     criterion = nn.MSELoss()
     tracker = config.tracker
 
+    # Setup loss function
+    energy_loss_fn = None
+    _graph_set = False
+
+    if loss_type == "gradient_weighted":
+        gw_cfg = loss_cfg.get("gradient_weighted", {})
+        n_fields = len(cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields", [])))
+        if n_fields < 2:
+            logger.error(
+                f"gradient_weighted loss requires at least 2 fields (got {n_fields}). "
+                "It assumes the last two fields are velocity components. Falling back to MSE."
+            )
+            loss_type = "mse"
+        else:
+            criterion = LossFunction(lambda_gradient=gw_cfg.get("lambda_gradient", 2.0))
+
+    elif loss_type == "energy":
+        en_cfg = loss_cfg.get("energy", {})
+        velocity_indices = en_cfg.get("velocity_indices", [])
+        buoyancy_idx = en_cfg.get("buoyancy_idx")
+        if velocity_indices and buoyancy_idx is not None:
+            logger.warning(
+                "EnergyLoss requires node_heights from the mesh. "
+                "This needs manual setup based on your geometry."
+            )
+            energy_loss_fn = None 
+        else:
+            logger.warning("Energy loss configured but missing velocity_indices or buoyancy_idx. Using MSE.")
+            loss_type = "mse"
+            
+        
     if hasattr(optimizer, "train"):  # schedulefree
         optimizer.train()  # type: ignore
 
@@ -157,11 +189,33 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
 
                 target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
 
-                optimizer.zero_grad()
-                                
-                preds, _ = model(**data)
-                #preds = model(**data)
-                loss = criterion(preds, target)
+                optimizer.zero_grad()                               
+                #preds, _ = model(**data)
+                ##preds = model(**data)
+                #loss = criterion(preds, target)
+                
+                # Set graph for gradient-weighted loss (first batch only)
+                if loss_type == "gradient_weighted" and not _graph_set:
+                    criterion.set_graph(
+                        data["edge_index"], data["edge_features"], data["num_nodes"]
+                    )
+                    _graph_set = True
+
+                if energy_loss_fn is not None:
+                    energy_cfg = cfg_dict.get("loss", {}).get("energy", {})
+                    field_names = cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields"))
+                    result = forward_loss(
+                        model, data, target, nn.MSELoss(),
+                        energy_loss_fn, energy_cfg, field_names
+                    )
+                    loss = result["loss"]
+                    if tracker and epoch % config.log_interval == 0:
+                        for key in ["mse", "ke", "ape", "pe_min", "mono"]:
+                            tracker.track(result[key], name=f"loss/{key}", step=epoch, context="train")
+                else:
+                    preds, _ = model(**data)
+                    loss = criterion(preds, target)
+                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1e8)
                 optimizer.step()
