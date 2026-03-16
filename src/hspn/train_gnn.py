@@ -27,6 +27,7 @@ from hspn.dogn.utils import (
 
 from hspn.dogn.loss import LossFunction, EnergyLoss, forward_loss
 from hspn.train_utils import save_checkpoint
+from hspn.dogn.rollout_evaluation import run_evaluation, resolve_baseline_vtu
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,6 @@ class TrainGNNConfig:
         # build optimizer + scheduler
         optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
         scheduler = hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer)
-
         return TrainGNNConfig(
             seed=cfg.seed,
             n_epochs=cfg.n_epochs,
@@ -115,12 +115,19 @@ class TrainGNNConfig:
             optimizer=optimizer,
             scheduler=scheduler,
             tracker=hydra.utils.instantiate(cfg.tracker) if Context.get().is_main_process else None,
+            extra={
+                "config": cfg_dict,
+                "statistics": train_stats,
+            },
         )
+        
 
 
 def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     ctx = Context()
     cfg = OmegaConf.create(cfg_dict)
+    loss_cfg = cfg_dict.get("loss", {})
+    loss_type = loss_cfg.get("type", "mse")
     OmegaConf.resolve(cfg)
 
     config = TrainGNNConfig.from_cfg(cfg)
@@ -171,6 +178,12 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     try:
         if tracker:
             tracker["hparams"] = cfg_dict
+        # Save resolved config alongside checkpoints
+        if ctx.is_main_process:
+            config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            config_save_path = config.checkpoint_dir / "config.yaml"
+            OmegaConf.save(cfg, config_save_path)
+            logger.info(f"Saved config to {config_save_path}")
         for epoch in range(1, config.n_epochs + 1):
             model.train()
             train_losses: list[float] = []
@@ -257,21 +270,29 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                             model=model, optimizer=optimizer,
                             scheduler=scheduler, gradscaler=None,
                             epoch=epoch, metrics={"epoch": epoch},
+                            extra=config.extra,
                         )
                         checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
                         report(metrics, checkpoint=checkpoint)
                 else:
                     config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                    tag = cfg_dict.get("tag", "model")
+                    experiment = cfg_dict.get("tracker", {})
+                    exp_name = experiment.get("experiment", "") if isinstance(experiment, dict) else ""
+                    vl_str = f"_vl{val_loss:.4f}" if val_loss is not None else ""
+                    prefix = f"{exp_name}_" if exp_name else ""
+                    ckpt_name = f"{prefix}{tag}_epoch{epoch}{vl_str}.pt"
                     save_checkpoint(
-                        config.checkpoint_dir / f"model_epoch{epoch}.pt",
+                        config.checkpoint_dir / ckpt_name,
                         model=model, optimizer=optimizer,
                         scheduler=scheduler, gradscaler=None,
                         epoch=epoch, metrics=metrics,
+                        extra=config.extra,
                     )
             #if epoch % 10 == 0 and ctx.is_main_process:
             #    from ray import train
 
-            #    metrics = {"loss": train_loss, "val_loss": val_loss}
+            #    metric  {"loss": train_loss, "val_loss": val_loss}
             #    with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
             #        from hspn.train_utils import save_checkpoint
 
@@ -292,6 +313,74 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     finally:
         if tracker:
             tracker.close()
+            
+        # === Post-training rollout evaluation ===
+        rollout_cfg = cfg_dict.get("rollout", {})
+        if rollout_cfg.get("enabled", False) and ctx.is_main_process:
+            logger.info("Running post-training rollout evaluation...")
+
+            # Validate required keys
+            missing = [k for k in ("rollout_dir", "node_file", "edge_file") if k not in rollout_cfg]
+            if missing:
+                logger.error(f"Rollout config missing required keys: {missing}. Skipping rollout.")
+            else:
+                # Find the latest checkpoint
+                ckpt_dir = config.checkpoint_dir
+                ckpt_files = sorted(ckpt_dir.glob("*.pt"), key=lambda p: p.stat().st_mtime)
+                if not ckpt_files:
+                    logger.error("No checkpoints found. Skipping rollout.")
+                else:
+                    latest_ckpt = ckpt_files[-1]
+                    logger.info(f"Using checkpoint: {latest_ckpt}")
+
+                    output_dir = Path(rollout_cfg.get("output_dir", "./rollouts"))
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    output_path = output_dir / f"rollout_epoch{epoch}"
+
+                    dataset_cfg = cfg_dict.get("dataset", cfg_dict)
+                    baseline_vtu = resolve_baseline_vtu(rollout_cfg, cfg_dict)
+
+                    try:
+                        result = run_evaluation(
+                            model_path=str(latest_ckpt),
+                            rollout_dir=rollout_cfg["rollout_dir"],
+                            node_file=rollout_cfg["node_file"],
+                            edge_file=rollout_cfg["edge_file"],
+                            baseline_vtu=baseline_vtu,
+                            output_path=str(output_path),
+                            training_cfg=dataset_cfg,
+                            start_idx=rollout_cfg.get("start_idx", 0),
+                        )
+                        logger.info(f"Rollout MSE: {result['avg_mse']:.6f}")
+                        if result["pvd_path"]:
+                            logger.info(f"Rollout PVD: {result['pvd_path']}")
+
+                        if tracker:
+                            tracker.track(result["avg_mse"], name="rollout/mse", step=epoch)
+
+                        # Generate movie if configured and PVD was produced
+                        movie_cfg = rollout_cfg.get("movie", {})
+                        if movie_cfg.get("enabled", False) and result["pvd_path"]:
+                            from hspn.dogn.rollout_movie import create_movie_from_pvd
+
+                            fields = dataset_cfg.get("fields", cfg_dict.get("fields", []))
+                            for field in fields:
+                                movie_path = output_dir / f"rollout_epoch{epoch}_{field}.mp4"
+                                create_movie_from_pvd(
+                                    pvd_file=result["pvd_path"],
+                                    output_file=str(movie_path),
+                                    prediction_field=f"predicted_{field}",
+                                    truth_field=f"ground_truth_{field}",
+                                    residual_field=f"residual_{field}",
+                                    fps=movie_cfg.get("fps", 24),
+                                    quality=movie_cfg.get("quality", 8),
+                                    cmap=movie_cfg.get("cmap", "viridis"),
+                                )
+                                logger.info(f"Movie saved: {movie_path}")
+
+                    except Exception as e:
+                        logger.error(f"Rollout evaluation failed: {e}")
+                        logger.exception("Rollout traceback:")
 
 
 @hydra.main(config_path="pkg://hspn.conf", config_name="train_gnn", version_base=None)

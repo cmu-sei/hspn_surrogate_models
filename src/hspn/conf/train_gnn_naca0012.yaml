@@ -138,15 +138,25 @@ tracker:
   repo: .
   experiment: ${hydra:job.config_name}
 
-# # TODO: Rollout
-# rollout:
-#   start: 0
-#   length: 100
-#   show_ground_truth: true
-
-
 trainer: null
 #trainer:
 #  num_workers: 1
 #  use_gpu: true
 #  resources_per_worker: { "CPU": 8, "GPU": 1 }
+
+rollout:
+  enabled: false  # Set to true to run rollout after training
+  rollout_dir: /srv/hspn_data/naca0012_reprocessed/reprocessed/Unsteady_NACA0012_aoa_15
+  node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+  edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+  start_idx: 100
+  output_dir: ${results_dir}/rollouts
+  # baseline_vtu is resolved automatically from dataset config (see Section 7)
+  # override here only if you need a different VTU:
+  # baseline_vtu_override: /path/to/different.vtu
+
+  movie:
+    enabled: false
+    fps: 24
+    quality: 8
+    cmap: viridis
