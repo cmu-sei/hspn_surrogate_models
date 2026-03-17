@@ -126,7 +126,6 @@ def calculate_color_limits(
 
     return prediction_truth_clim, residual_clim, residual_xlim
 
-
 def create_2d_chart_background(mesh):
     """Create a 2D chart with axes for background."""
     chart = pv.Chart2D()
@@ -139,11 +138,14 @@ def create_2d_chart_background(mesh):
     chart.x_axis.label_size = 17
     chart.y_axis.label_size = 17
     chart.scatter([0], [0], color=pv.Color("green", opacity=0.0))
-    chart.opacity = 0.0
-    chart.border_style = None
     chart.grid = False
     chart.size = (0.42, 0.93)
     chart.loc = (0.278, 0.0)
+    for attr, val in [("opacity", 0.0), ("border_style", None)]:
+        try:
+            setattr(chart, attr, val)
+        except Exception:
+            pass
     return chart
 
 
