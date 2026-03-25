@@ -1,0 +1,30 @@
+name: naca0012
+root: /srv/hspn_data/naca0012_reprocessed/reprocessed/
+node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+
+train_datasets:
+  - field_dir:
+      - Unsteady_NACA0012_aoa_00
+      - Unsteady_NACA0012_aoa_05
+      - Unsteady_NACA0012_aoa_10
+      - Unsteady_NACA0012_aoa_12
+      - Unsteady_NACA0012_aoa_17
+      - Unsteady_NACA0012_aoa_20
+      - Unsteady_NACA0012_aoa_23
+      - Unsteady_NACA0012_aoa_25
+valid_datasets:
+  - field_dir:
+      - Unsteady_NACA0012_aoa_15
+
+fields: ["Density"]
+time_minimum: 50
+time_maximum: 499
+dimensions: 2
+param_keys: ["cosine", "sine"]
+update_node_tags: [0]
+bounds:
+  x_min: -0.5
+  x_max: 3.5
+  y_min: -1.0
+  y_max: 1.0

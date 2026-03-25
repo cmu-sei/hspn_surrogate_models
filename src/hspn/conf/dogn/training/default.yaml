@@ -1,0 +1,50 @@
+seed: 42
+n_epochs: 501
+learning_rate: 9.99e-4
+batch_size: 64
+log_interval: 10
+
+bundle: 2
+push_forward: 3
+noise: 5e-5
+bundle_style: overlapping
+max_samples_per_field_dir: -1
+
+loss:
+  type: "mse"
+  gradient_weighted:
+    lambda_gradient: 2.0
+  energy:
+    velocity_indices: []
+    buoyancy_idx: null
+    ke_weight: 1.0
+    ape_weight: 1.0
+    pe_min_weight: 1.0
+    monotonic_weight: 0.1
+
+optimizer:
+  _target_: schedulefree.AdamWScheduleFree
+  lr: ${training.learning_rate}
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ConstantLR
+  factor: 1.0
+  total_iters: 1
+
+early_stopping:
+  patience: 50
+  min_delta: 0.0001
+
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+val_dataloader:
+  _target_: torch.utils.data.DataLoader
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2

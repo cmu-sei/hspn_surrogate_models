@@ -1,0 +1,8 @@
+# /workspace/rollout_config.yaml
+model: /workspace/models/ckpt/train_gnn_both_epoch200_vl0.0053.pt
+rollout_dir: /srv/hspn_data/naca0012_reprocessed/reprocessed/Unsteady_NACA0012_aoa_15
+node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+baseline_geometry_vtu: /srv/hspn_data/naca0012_reprocessed/reprocessed/baseline.vtu
+start_idx: 100
+save_as_name: /workspace/models/rollouts/rollout_epoch200

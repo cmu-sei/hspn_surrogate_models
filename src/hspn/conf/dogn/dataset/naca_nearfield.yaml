@@ -1,0 +1,65 @@
+name: naca_nearfield
+root: /srv/hspn_data/naca0012_nearfield/updated/aoa_only_npy/
+node_file: /srv/hspn_data/naca0012_nearfield/updated/nodes.npy
+edge_file: /srv/hspn_data/naca0012_nearfield/updated/edges.npy
+
+train_datasets:
+  - field_dir:
+    - Re_1000000_AOA_neg_0045
+    - Re_1000000_AOA_neg_0040
+    - Re_1000000_AOA_neg_0030
+  #  - Re_1000000_AOA_neg_0025 ## used in validation 
+    - Re_1000000_AOA_neg_0020
+    - Re_1000000_AOA_neg_0005
+    - Re_1000000_AOA_pos_0000
+  #  - Re_1000000_AOA_pos_0010 ## used in validation
+    - Re_1000000_AOA_pos_0015
+    - Re_1000000_AOA_pos_0020
+    - Re_1000000_AOA_pos_0025
+  #  - Re_1000000_AOA_pos_0035 ## used in validation
+    - Re_1000000_AOA_pos_0045
+    - Re_1000000_AOA_pos_0050
+    - Re_1000000_AOA_pos_0055
+    - Re_1000000_AOA_pos_0065
+  #  - Re_1000000_AOA_pos_0075  ## used in validation
+    - Re_1000000_AOA_pos_0080
+    - Re_1000000_AOA_pos_0090
+    - Re_1000000_AOA_pos_0095
+    - Re_1000000_AOA_pos_0100
+    - Re_1000000_AOA_pos_0115
+  #  - Re_1000000_AOA_pos_0125 ## used in validation
+    - Re_1000000_AOA_pos_0135
+    - Re_1000000_AOA_pos_0140
+    - Re_1000000_AOA_pos_0145
+    - Re_1000000_AOA_pos_0160
+    - Re_1000000_AOA_pos_0165
+  #  - Re_1000000_AOA_pos_0170 ## used in validation 
+    - Re_1000000_AOA_pos_0175
+    - Re_1000000_AOA_pos_0180
+  # - Re_1000000_AOA_pos_0185 ## used in validation
+    - Re_1000000_AOA_pos_0190 
+  #  - Re_1000000_AOA_pos_0200 ## used in validation 
+    - Re_1000000_AOA_pos_0210
+    - Re_1000000_AOA_pos_0220
+    - Re_1000000_AOA_pos_0230
+    - Re_1000000_AOA_pos_0240
+    - Re_1000000_AOA_pos_0245
+valid_datasets:
+  - field_dir:
+    - Re_1000000_AOA_neg_0025
+    - Re_1000000_AOA_pos_0010
+    - Re_1000000_AOA_pos_0035
+    - Re_1000000_AOA_pos_0075
+    - Re_1000000_AOA_pos_0125
+    - Re_1000000_AOA_pos_0170 
+    - Re_1000000_AOA_pos_0185
+    - Re_1000000_AOA_pos_0200
+
+fields: [Density]
+time_minimum: 50        # for this simulation , the first few time steps are hard to simulate.
+time_maximum: 400
+dimensions: 2
+param_keys: ["cosine", "sine"]
+update_node_tags: [0,1,3] # node types that you will update - 0=Normal, 1=Boundary, 2=Inflow, 3=Outflow
+
+
