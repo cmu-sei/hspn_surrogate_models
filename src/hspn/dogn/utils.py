@@ -115,47 +115,6 @@ class GradientMonitor:
         self.handles = []
 
 
-def save_checkpoint(
-    model: nn.Module,
-    tag: str,
-    epoch: str,
-    dir_models: str = ".",
-    statistics: dict[str, float] | None = None,
-):
-    """Saves a model checkpoint to the specified directory. Model is saved to
-    the file "{model_dir}/model_checkpoint_loss_{loss}.pt" along with its loss.
-
-    Args:
-        model (nn.Module): Model to be saved.
-        tag (str): Model tag string.
-        epoch (int): Training epoch number.
-        dir_models (str, optional): Directory in which model checkpoints are
-            stored. Defaults to ".".
-    """
-    path = get_model_path(epoch, tag, dir_models)
-    if isinstance(model, DDP):
-        model = model.module
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "statistics": statistics,
-        },
-        path,
-    )
-
-
-def load_checkpoint(
-    model: nn.Module,
-    tag: str,
-    epoch: str,
-    dir_models: str = ".",
-):
-    """Loads a checkpoint model from the specified path."""
-    path = get_model_path(epoch, tag, dir_models)
-    checkpoint = torch.load(path, weights_only=True)
-    logger.info("Loaded model")
-    model.load_state_dict(checkpoint["model_state_dict"])
-
 
 def get_model_path(
     epoch: int,
@@ -204,11 +163,48 @@ def pyg_style_collate_fn(batch):
     # Prepare targets separately
     single_step_y = torch.cat([data["single_step_y"] for data in batch], dim=0)
 
+
     pf_list = [
-        data["push_forward_y"] for data in batch if "push_forward_y" in data and data["push_forward_y"].numel() > 0
+        data["push_forward_y"]
+        for data in batch
+        if "push_forward_y" in data
+        and data["push_forward_y"] is not None
+        and data["push_forward_y"].numel() > 0
     ]
     push_forward_y = torch.cat(pf_list, dim=0) if pf_list else None
 
+    # Dirichlet masks: per-graph boolean masks that must be repeated for the batch.
+    # forward() indexes into update[node_mask, field_idx, :] where update has shape
+    # [batch*nodes, n_fields, bundle], so node_mask must cover batch*nodes.
+    dirichlet_masks = first.get("dirichlet_masks")
+    if dirichlet_masks is not None:
+        dirichlet_masks = {k: v.repeat(batch_size) for k, v in dirichlet_masks.items()}
+
+    # pos: per-graph node positions. Not currently used by forward(), but if it
+    pos = first.get("pos")
+
+    # edge_update: per-sample edge features for moving-node problems
+    edge_update = None
+    if "edge_update" in first:
+        edge_update = torch.cat([data["edge_update"] for data in batch], dim=0)
+
+
+    # Expected shapes in input_dict:
+    #   field_data:         [batch_size * num_nodes, n_fields, bundle_size]
+    #   edge_index:         [2, batch_size * num_edges]  (offset per graph)
+    #   edge_features:      [batch_size * num_edges, edge_dim]  (repeated from single graph)
+    #   one_hot_node_type:  [batch_size * num_nodes, n_types]   (repeated from single graph)
+    #   mask:               [batch_size * num_nodes]             (repeated from single graph)
+    #   params:             [batch_size, n_params]
+    #   dirichlet_masks:    {field_idx: [batch_size * num_nodes]} or None  (repeated from single graph)
+    #   pos:                [num_nodes, dims] or None  (single graph, NOT repeated — see note)
+    #   edge_update:        [batch_size * num_edges, edge_dim] or absent  (concatenated per sample)
+    #   push_forward_count: int
+    #   batch_size:         int
+    #   bundle_size:        int
+    #   num_nodes:          int  (per single graph)
+    #   num_edges:          int  (per single graph)
+    
     input_dict = {
         "field_data": x_concat,
         "edge_index": edge_index_concat,
@@ -223,7 +219,11 @@ def pyg_style_collate_fn(batch):
         "num_edges": num_edges,
         "num_node_features": num_node_features,
         "num_edge_features": num_edge_features,
-        "dirichlet_masks": None,
+        "dirichlet_masks": dirichlet_masks,
+        "pos": pos,
     }
+
+    if edge_update is not None:
+        input_dict["edge_update"] = edge_update
 
     return input_dict, single_step_y, push_forward_y

@@ -670,6 +670,7 @@ class GraphNetworkSimulator(nn.Module):
         """
             
         residual = field_data[:, :, -1:].clone().repeat(1, 1, field_data.size(2))
+          
         # Select architecture1
         arch = self._forward_compatibility if self.is_compatibility_mode else self._forward_internal
         update = arch(
@@ -791,7 +792,7 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
     """
     # Extract configuration
     n_fields = len(config.get("fields", []))
-    n_params = config.get("dataset",{}).get("n_params", 0)
+    n_params = len(config.get("dataset", {}).get("param_keys", []))
     dimensions = config.get("dimensions", 2)
     bundle = config.get("bundle", 1)
     
