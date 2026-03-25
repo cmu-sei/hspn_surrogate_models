@@ -16,6 +16,11 @@ from hspn.dogn.graph_utils import (apply_spatial_crop, create_one_hot_encoding, 
                                     load_node_data)
 from hspn.dogn.classes import get_model
 
+def resolve_baseline_vtu(rollout_cfg, training_cfg):
+    """Get baseline VTU path from rollout config."""
+    return rollout_cfg.get("baseline_vtu")
+
+
 def load_model_get_normalization(model_dict):
     if "config" in model_dict:
         # Your original format
@@ -192,6 +197,18 @@ def run_evaluation(model_path, rollout_dir, node_file, edge_file, baseline_vtu, 
     Returns:
         dict: {"pvd_path": str, "avg_mse": float}
     """
+    # Flatten nested config structure if needed.
+    # With the new Hydra config groups, keys like bundle/fields/dimensions
+    # may be split across dataset and training sections.
+    if "dataset" in training_cfg or "training" in training_cfg:
+        flat = {}
+        flat.update(training_cfg.get("dataset", {}))
+        flat.update(training_cfg.get("training", {}))
+        # fields and bundle are also set at top level by from_cfg
+        for key in ("fields", "bundle"):
+            if key in training_cfg:
+                flat[key] = training_cfg[key]
+        training_cfg = flat
     vtp_dir = Path(rollout_dir)
     node_file = Path(node_file)
     edge_file = Path(edge_file)
@@ -203,11 +220,19 @@ def run_evaluation(model_path, rollout_dir, node_file, edge_file, baseline_vtu, 
     # Load parameters
     logger.debug("Getting parameters")
     params_path = vtp_dir / "params.json"
-    param_data = torch.tensor(
-        list(json.loads(params_path.read_text()).values()), dtype=torch.float32
-    )
+    params_dict = json.loads(params_path.read_text())
+    param_keys = training_cfg.get("dataset", training_cfg).get("param_keys", [])
+    if param_keys:
+        missing = [k for k in param_keys if k not in params_dict]
+        if missing:
+            raise ValueError(
+                f"{params_path} missing keys: {missing}. "
+                f"Available keys: {list(params_dict.keys())}"
+            )
+        param_data = torch.tensor([params_dict[k] for k in param_keys], dtype=torch.float32)
+    else:
+        param_data = torch.tensor(list(params_dict.values()), dtype=torch.float32)
     param_data = param_data.reshape(1, -1)
-
     # Load model and statistics only
     model_dict = torch.load(model_path, weights_only=False, map_location="cpu")
     model, statistics = load_model_get_normalization(model_dict)
