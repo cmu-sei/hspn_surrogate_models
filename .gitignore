@@ -183,3 +183,4 @@ cython_debug/
 
 justfile
 node_modules
+.bash_history_container
