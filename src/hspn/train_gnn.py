@@ -18,7 +18,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 
 from hspn.context import Context
-from hspn.dogn.data import get_dataset
+from hspn.dogn.data_pipeline import get_dataset
 from hspn.dogn.classes import get_model
 from hspn.dogn.utils import (
     GraphBatchSampler,
@@ -56,59 +56,50 @@ class TrainGNNConfig:
     @classmethod
     def from_cfg(cls, cfg: DictConfig) -> "TrainGNNConfig":
         """Contructs from dictconfig."""
+        cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+        tcfg = cfg.training  # shorthand
+
+        # Merge training hyperparams into dataset config for get_dataset.
+        # get_dataset expects bundle, push_forward, noise, etc. in the dict it receives.
+        dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
+        for key in ("bundle", "push_forward", "noise", "bundle_style", "max_samples_per_field_dir"):
+            if key in cfg_dict.get("training", {}):
+                dataset_cfg[key] = cfg_dict["training"][key]
+
         # build datasets
-        train_dataset = get_dataset("train", cfg.dataset)
+        train_dataset = get_dataset("train", dataset_cfg)
         train_stats = {"mean": train_dataset.mean, "var": train_dataset.std**2}
-        val_dataset = get_dataset("valid", cfg.dataset, train_stats=train_stats)
+        val_dataset = get_dataset("valid", dataset_cfg, train_stats=train_stats)
 
         # build dataloaders
         dataloader = hydra.utils.instantiate(
-            cfg.dataloader,
+            tcfg.dataloader,
             dataset=train_dataset,
             collate_fn=pyg_style_collate_fn,
-            batch_sampler=GraphBatchSampler(train_dataset, batch_size=cfg.batch_size, shuffle=True),
+            batch_sampler=GraphBatchSampler(train_dataset, batch_size=tcfg.batch_size, shuffle=True),
         )
         val_dataloader = hydra.utils.instantiate(
-            cfg.val_dataloader,
+            tcfg.val_dataloader,
             dataset=val_dataset,
             collate_fn=pyg_style_collate_fn,
-            batch_sampler=GraphBatchSampler(val_dataset, batch_size=cfg.batch_size, shuffle=False),
+            batch_sampler=GraphBatchSampler(val_dataset, batch_size=tcfg.batch_size, shuffle=False),
         )
 
         # build model
-                
-        cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         cfg_dict["fields"] = train_dataset.fields
         cfg_dict["bundle"] = train_dataset.bundle
+        cfg_dict["dataset"] = dataset_cfg  # save merged config for checkpoint
         model = get_model(cfg_dict, n_types=train_dataset.n_node_types)
-        #d_inp = len(train_dataset.fields)
-        #d_out = len(train_dataset.fields) * train_dataset.bundle
-        #n_typ = train_dataset.n_node_types
-
-        #model = EPDOModel(
-        #    d_inp=d_inp,
-        #    d_out=d_out,
-        #    n_typ=n_typ,
-        #    hidden_channels=cfg.model.hidden_channels,
-        #    mlp_width=cfg.model.mlp_width,
-        #    mlp_depth=cfg.model.mlp_depth,
-        #    dropout=cfg.model.dropout,
-        #    n_processing_blocks=cfg.model.n_processing_blocks,
-        #    checkpointed=cfg.model.checkpointed,
-        #    activation=cfg.model.activation,
-        #    reweight=cfg.model.reweight,
-        #)
-
-        # build optimizer + scheduler
-        optimizer = hydra.utils.instantiate(cfg.optimizer, params=model.parameters())
-        scheduler = hydra.utils.instantiate(cfg.scheduler, optimizer=optimizer)
+        
+        optimizer = hydra.utils.instantiate(tcfg.optimizer, params=model.parameters())
+        scheduler = hydra.utils.instantiate(tcfg.scheduler, optimizer=optimizer)
         return TrainGNNConfig(
-            seed=cfg.seed,
-            n_epochs=cfg.n_epochs,
+            seed=tcfg.seed,
+            n_epochs=tcfg.n_epochs,
             checkpoint_dir=cfg.checkpoint_dir,
-            learning_rate=cfg.learning_rate,
-            batch_size=cfg.batch_size,
-            log_interval=cfg.log_interval,
+            learning_rate=tcfg.learning_rate,
+            batch_size=tcfg.batch_size,
+            log_interval=tcfg.log_interval,
             model=model,
             dataloader=dataloader,
             val_dataloader=val_dataloader,
@@ -126,7 +117,8 @@ class TrainGNNConfig:
 def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     ctx = Context()
     cfg = OmegaConf.create(cfg_dict)
-    loss_cfg = cfg_dict.get("loss", {})
+    training_dict = cfg_dict.get("training", {})
+    loss_cfg = training_dict.get("loss", {})
     loss_type = loss_cfg.get("type", "mse")
     OmegaConf.resolve(cfg)
 
@@ -145,9 +137,21 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     energy_loss_fn = None
     _graph_set = False
 
+    # Resume from checkpoint
+    resume_from = cfg_dict.get("resume_from")
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location="cpu")
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt.get("epoch", 0)
+        logger.info(f"Resumed from {resume_from} at epoch {start_epoch}")
+    else:
+        start_epoch = 0
+        
+    
     if loss_type == "gradient_weighted":
         gw_cfg = loss_cfg.get("gradient_weighted", {})
-        n_fields = len(cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields", [])))
+        n_fields = len(cfg_dict.get("dataset", {}).get("fields", []))
         if n_fields < 2:
             logger.error(
                 f"gradient_weighted loss requires at least 2 fields (got {n_fields}). "
@@ -184,7 +188,14 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
             config_save_path = config.checkpoint_dir / "config.yaml"
             OmegaConf.save(cfg, config_save_path)
             logger.info(f"Saved config to {config_save_path}")
-        for epoch in range(1, config.n_epochs + 1):
+        
+        # Early stopping
+        best_val_loss = float("inf")
+        patience_counter = 0
+        es_cfg = training_dict.get("early_stopping", {})
+        patience = es_cfg.get("patience", 0)  # 0 = disabled
+        min_delta = es_cfg.get("min_delta", 0.0)
+        for epoch in range(start_epoch+1, config.n_epochs + 1):
             model.train()
             train_losses: list[float] = []
 
@@ -215,16 +226,18 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                     _graph_set = True
 
                 if energy_loss_fn is not None:
-                    energy_cfg = cfg_dict.get("loss", {}).get("energy", {})
-                    field_names = cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields"))
+                    energy_cfg = training_dict.get("loss", {}).get("energy", {})
+                    field_names = cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields", []))
                     result = forward_loss(
                         model, data, target, nn.MSELoss(),
                         energy_loss_fn, energy_cfg, field_names
                     )
                     loss = result["loss"]
+                    
+                    logger.info("[%d] train loss: %f", epoch, train_loss)
                     if tracker and epoch % config.log_interval == 0:
                         for key in ["mse", "ke", "ape", "pe_min", "mono"]:
-                            tracker.track(result[key], name=f"loss/{key}", step=epoch, context="train")
+                            tracker.track(result[key], name=f"loss/{key}", step=epoch, context={"subset": "train"})
                 else:
                     preds, _ = model(**data)
                     loss = criterion(preds, target)
@@ -237,29 +250,47 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
 
             train_loss = sum(train_losses) / len(train_losses)
             if tracker:
-                tracker.track(train_loss, name="loss/train", step=epoch, context="train")
+                tracker.track(train_loss, name="loss", step=epoch, context={"subset": "train"})
 
             model.eval()
+            if hasattr(optimizer, "eval"):  # schedulefree
+                optimizer.eval()
+
             val_losses: list[float] = []
             with torch.no_grad():
                 for data, single_step_y, push_forward_y in val_loader:
                     data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
 
                     push_forward_count = data.get("push_forward_count", 0)
-                    for _ in range(push_forward_count + 1):
-                        data["field_data"],_ = model(**data)
 
-                    y_hat = data["field_data"]
-                    val_loss = criterion(y_hat, push_forward_y.to(device))
+                    # Push-forward warmup steps
+                    for _ in range(push_forward_count):
+                        data["field_data"], _ = model(**data)
+
+                    # Final graded prediction
+                    preds, _ = model(**data)
+
+                    target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
+                    val_loss = criterion(preds, target)
                     val_losses.append(val_loss.item())
 
+                
             val_loss = sum(val_losses) / len(val_losses)
             if tracker:
-                tracker.track(val_loss, name="loss/val", step=epoch, context="train")
+                tracker.track(val_loss, name="loss", step=epoch, context={"subset": "val"})
             logger.info("[%d] val loss: %f", epoch, val_loss)
 
             scheduler.step()
 
+            if patience > 0:
+                if val_loss < best_val_loss - min_delta:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        logger.info(f"Early stopping at epoch {epoch} (best val_loss: {best_val_loss:.6f})")
+                        break
 
             if epoch % 10 == 0 and ctx.is_main_process:
                 metrics = {"loss": train_loss, "val_loss": val_loss}
@@ -289,6 +320,10 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                         epoch=epoch, metrics=metrics,
                         extra=config.extra,
                     )
+            #switch back to training
+            if hasattr(optimizer, "train"):  # schedulefree
+                optimizer.train()
+            
             #if epoch % 10 == 0 and ctx.is_main_process:
             #    from ray import train
 
@@ -336,10 +371,9 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                     output_dir = Path(rollout_cfg.get("output_dir", "./rollouts"))
                     output_dir.mkdir(parents=True, exist_ok=True)
                     output_path = output_dir / f"rollout_epoch{epoch}"
-
-                    dataset_cfg = cfg_dict.get("dataset", cfg_dict)
+                    dataset_cfg = cfg_dict.get("dataset", {})
                     baseline_vtu = resolve_baseline_vtu(rollout_cfg, cfg_dict)
-
+                    
                     try:
                         result = run_evaluation(
                             model_path=str(latest_ckpt),
@@ -383,7 +417,7 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                         logger.exception("Rollout traceback:")
 
 
-@hydra.main(config_path="pkg://hspn.conf", config_name="train_gnn", version_base=None)
+@hydra.main(config_path="pkg://hspn.conf.dogn", config_name="train_gnn", version_base=None)
 def main(cfg: DictConfig) -> None:
     OmegaConf.resolve(cfg)
     if trainer_cfg := cfg.get("trainer"):
