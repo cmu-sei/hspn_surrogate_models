@@ -40,4 +40,5 @@ services:
     runtime: nvidia
     volumes:
       - .:/workspace:rw
+      - .bash_history_container:/root/.bash_history
       - /srv/hspn_data/:/srv/hspn_data/:ro
