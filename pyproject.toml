@@ -28,9 +28,10 @@ dev = [
 ]
 hpo = [
     "hydra-optuna-sweeper==1.2.0",
+  #  "optuna==4.8.0",
     "redis>=6.4.0",
     "hydra-ray-launcher>=1.2.0",
-    "pydantic<2", # https://github.com/ray-project/ray/issues/37019
+    "pydantic<2",
 ]
 gnn = [
     "ray[train]>=2.44.0",

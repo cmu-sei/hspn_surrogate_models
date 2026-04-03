@@ -14,26 +14,25 @@
 # 
 # DM25-0396
 #
+#!/bin/bash
+set -e
 
+groupadd -f -g $MY_GID devgroup 2>/dev/null || true
+useradd -m -u $MY_UID -g $MY_GID -d /home/$MY_USER -s /bin/bash $MY_USER 2>/dev/null || true
+usermod -aG root $MY_USER 2>/dev/null || true
+passwd -d $MY_USER 2>/dev/null || true
 
-uid=$(id -u)
-gid=$(id -g)
-[[ $uid -eq 0 ]] || export HOME=/home/$USER
+export HOME=/home/$MY_USER
+mkdir -p $HOME/.local
+chown -R $MY_UID:$MY_GID $HOME
 
-[[ $uid -eq 0 ]] || su - root <<!
-password
-
-chmod 777 /root
-chmod 777 /root/.cache
-
-work_dir=$(pwd)
-groupadd --gid $gid $USER
-useradd --uid $uid --gid $gid --create-home --home-dir $HOME $USER
-usermod -aG root $USER
-passwd -d $USER
-!
-export PATH=$PATH:$HOME/.local/bin
-pip install -e .
-
+su $MY_USER -c "pip install -e /workspace"
 umask 0002
-/opt/nvidia/nvidia_entrypoint.sh $@
+
+if [ "$RUN_AS_ROOT" = "true" ]; then
+    exec /opt/nvidia/nvidia_entrypoint.sh "$@"
+elif [ $# -eq 0 ]; then
+    exec su $MY_USER
+else
+    exec su $MY_USER -c "/opt/nvidia/nvidia_entrypoint.sh $*"
+fi

@@ -37,6 +37,7 @@ constraints=()
 pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e ".[gnn]"
 EOT
 
-RUN echo "root:password" | chpasswd
+RUN echo "root:password" | chpasswd && \
+    mkdir -p /home/.local && chmod 777 /home/.local
 COPY --chmod=555 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
