@@ -1,0 +1,32 @@
+name: "gns_both_comp_lin_3_32_128_5-3"
+deeponet_type: "both"
+time_aggregation: "conv_compress"
+time_integration: "linear"
+latent_dimension: 32
+n_processors: 3
+edge_encoder:
+  hidden_width: 128
+  hidden_layers: 5
+  activation: silu
+node_encoder:
+  hidden_width: 128
+  hidden_layers: 5
+  activation: silu
+node_decoder:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+edge_updater:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+  ReZero: true
+node_updater:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+  ReZero: true
+branch_net:
+  hidden_width: 128
+  hidden_layers: 5
+  activation: silu

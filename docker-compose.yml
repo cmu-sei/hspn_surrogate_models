@@ -14,10 +14,8 @@
 # DM25-0396
 #
 
-services:
-  dev:
-    image: hspn/surrogate-models-dev
-    build:
+x-base: &x-base
+  build:
       context: .
       dockerfile: ./Dockerfile
       args:
@@ -27,7 +25,18 @@ services:
         https_proxy: ${https_proxy}
         NO_PROXY: ${NO_PROXY}
         no_proxy: ${no_proxy}
+
+  container_name: hspn-sm-${USER}
+  image: hspn/surrogate-models-dev
+
+services:
+  dev:
+    <<: *x-base
     environment:
+      - MY_UID=${MY_UID}
+      - MY_GID=${MY_GID}
+      - MY_USER=${USER}
+      - RUN_AS_ROOT=${RUN_AS_ROOT:-false}
       - HTTP_PROXY=${HTTP_PROXY}
       - http_proxy=${http_proxy}
       - HTTPS_PROXY=${HTTPS_PROXY}
@@ -40,4 +49,5 @@ services:
     runtime: nvidia
     volumes:
       - .:/workspace:rw
+      - .bash_history_container:/home/$MY_USER/.bash_history
       - /srv/hspn_data/:/srv/hspn_data/:ro

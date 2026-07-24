@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+*.vtu
 # C extensions
 *.so
 
@@ -183,3 +183,4 @@ cython_debug/
 
 justfile
 node_modules
+.bash_history_container

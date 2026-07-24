@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+
+name: naca0012
+root: /srv/hspn_data/naca0012_reprocessed/reprocessed/
+node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+
+train_datasets:
+  - field_dir:
+      - Unsteady_NACA0012_aoa_00
+      - Unsteady_NACA0012_aoa_05
+      - Unsteady_NACA0012_aoa_10
+      - Unsteady_NACA0012_aoa_12
+      - Unsteady_NACA0012_aoa_17
+      - Unsteady_NACA0012_aoa_20
+      - Unsteady_NACA0012_aoa_23
+      - Unsteady_NACA0012_aoa_25
+valid_datasets:
+  - field_dir:
+      - Unsteady_NACA0012_aoa_15
+
+fields: ["Density"]
+time_minimum: 50
+time_maximum: 499
+dimensions: 2
+param_keys: ["cosine", "sine"]
+update_node_tags: [0]
+bounds:
+  x_min: -0.5
+  x_max: 3.5
+  y_min: -1.0
+  y_max: 1.0

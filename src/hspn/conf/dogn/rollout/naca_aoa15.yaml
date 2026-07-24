@@ -1,0 +1,13 @@
+enabled: true
+rollout_dir: /srv/hspn_data/naca0012_reprocessed/reprocessed/Unsteady_NACA0012_aoa_15
+node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+baseline_vtu: /srv/hspn_data/naca0012_reprocessed/reprocessed/baseline.vtu
+start_idx: 100
+output_dir: ${results_dir}/rollouts
+
+movie:
+  enabled: false
+  fps: 24
+  quality: 8
+  cmap: viridis

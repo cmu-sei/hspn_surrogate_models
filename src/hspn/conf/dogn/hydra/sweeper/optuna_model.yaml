@@ -1,0 +1,19 @@
+_target_: hydra_plugins.hydra_optuna_sweeper.optuna_sweeper.OptunaSweeper
+
+storage: null
+study_name: "model_sweep"
+n_jobs: 1
+search_space: null
+custom_search_space: null
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+
+direction: minimize
+n_trials: 20
+
+params:
+  model: choice(gns_both_flat_linear_9_32, gns_both_flat_linear_6_64_128, gns_both_flat_linear_6_64_128_5-3, gns_both_flat_linear_3_32, gns_both_flat_linear_3_32_128, gns_both_flat_linear_3_32_128_5-3, gns_node_flat_linear_6_64_12, gns_node_flat_linear_3_32_128_5-3)
+  training.learning_rate: tag(log, interval(0.00001, 0.001))
+  training.noise: tag(log, interval(0.000001, 0.0001))

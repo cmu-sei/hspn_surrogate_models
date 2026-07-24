@@ -21,6 +21,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     git \
     bash \
+    libgl1-mesa-glx \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
@@ -31,9 +33,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 pip install --cache-dir=/root/.cache/pip --upgrade pip
 constraints=()
 [[ -f /etc/pip/constraint.txt ]] && constraints=(-c /etc/pip/constraint.txt)
-pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
+#pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e .
+pip install --cache-dir=/root/.cache/pip "${constraints[@]}" -e ".[gnn]"
 EOT
 
-RUN echo "root:password" | chpasswd
+RUN echo "root:password" | chpasswd && \
+    mkdir -p /home/.local && chmod 777 /home/.local
 COPY --chmod=555 entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

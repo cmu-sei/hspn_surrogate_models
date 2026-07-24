@@ -1,0 +1,32 @@
+name: "gns_node_flat_lin_6_64_128"
+deeponet_type: "node"
+time_aggregation: "flatten"
+time_integration: "linear"
+latent_dimension: 64
+n_processors: 6
+edge_encoder:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+node_encoder:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+node_decoder:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+edge_updater:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+  ReZero: true
+node_updater:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu
+  ReZero: true
+branch_net:
+  hidden_width: 128
+  hidden_layers: 3
+  activation: silu

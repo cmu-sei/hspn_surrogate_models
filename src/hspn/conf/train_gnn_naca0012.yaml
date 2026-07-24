@@ -1,0 +1,117 @@
+defaults:
+  - _self_
+
+dataset:
+  train_datasets:
+    - root: /srv/hspn_data/naca0012_reprocessed/reprocessed/
+      node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+      edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+      field_dir:
+        - Unsteady_NACA0012_aoa_10
+        - Unsteady_NACA0012_aoa_12
+        - Unsteady_NACA0012_aoa_17
+        - Unsteady_NACA0012_aoa_20
+  valid_datasets:
+    - root: /srv/hspn_data/naca0012_reprocessed/reprocessed/
+      node_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/nodes.npy
+      edge_file: /srv/hspn_data/naca0012_reprocessed/reprocessed/edges_cell.npy
+      field_dir:
+        - Unsteady_NACA0012_aoa_10
+  fields: ["Density"]
+  time_minimum: 100
+  time_maximum: 499
+  bounds:
+    x_min: -0.5
+    x_max: 3.5
+    y_min: -1.0
+    y_max: 1.0
+  dimensions: 2
+  param_keys: ["cosine", "sine"]
+  update_node_tags: [0]
+
+model:
+  deeponet_type: "both"
+  time_aggregation: "flatten"
+  time_integration: "linear"
+  latent_dimension: 32
+  n_processors: 9
+  edge_encoder:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+  node_encoder:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+  node_decoder:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+  edge_updater:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+    ReZero: true
+  node_updater:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+    ReZero: true
+  branch_net:
+    hidden_width: 40
+    hidden_layers: 3
+    activation: silu
+
+training:
+  seed: 42
+  n_epochs: 201
+  learning_rate: 9.99e-3
+  batch_size: 3
+  log_interval: 10
+  bundle: 2
+  push_forward: 2
+  noise: 1e-4
+  bundle_style: non_overlapping
+  max_samples_per_field_dir: -1
+  loss:
+    type: "mse"
+    gradient_weighted:
+      lambda_gradient: 2.0
+    energy:
+      velocity_indices: []
+      buoyancy_idx: null
+      ke_weight: 1.0
+      ape_weight: 1.0
+      pe_min_weight: 1.0
+      monotonic_weight: 0.1
+  optimizer:
+    _target_: schedulefree.AdamWScheduleFree
+    lr: ${training.learning_rate}
+  scheduler:
+    _target_: torch.optim.lr_scheduler.ConstantLR
+    factor: 1.0
+    total_iters: 1
+  dataloader:
+    _target_: torch.utils.data.DataLoader
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+  val_dataloader:
+    _target_: torch.utils.data.DataLoader
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+
+rollout:
+  enabled: false
+
+tag: both
+checkpoint_dir: ./models/ckpt
+results_dir: ./models/
+tracker:
+  _target_: aim.Run
+  repo: .
+  experiment: ${hydra:job.config_name}
+trainer: null
