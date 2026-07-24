@@ -1,3 +1,20 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+ 
+
 import json
 import sys
 import warnings
@@ -15,6 +32,62 @@ from hspn.dogn.graph_utils import (apply_spatial_crop, create_one_hot_encoding, 
                                     create_spatial_mask, create_bc_masks, get_edge_features,
                                     load_node_data)
 from hspn.dogn.classes import get_model
+
+def rollout_stay_latent(model, data, n_steps, visualize_every=1):
+    """Rollout in latent space with re-encoding to stay on manifold."""
+    node_enc, edge_enc, _, latent_ctx = model.encode_to_latent(
+        data["field_data"], data["one_hot_node_type"],
+        data["edge_index"], data["edge_features"],
+        data["params"], data["num_nodes"], data["num_edges"],
+        mask=data["mask"],
+        dirichlet_masks=data.get("dirichlet_masks"),
+    )
+
+    predictions = []
+    for step in range(n_steps):
+        node_enc, edge_enc = model.message_passing_series(node_enc, edge_enc, latent_ctx)
+
+        # Decode to physical space
+        pred = model.decode_from_latent(node_enc, latent_ctx)
+
+        if step % visualize_every == 0:
+            predictions.append(pred.detach().cpu())
+
+        # Re-encode to project back onto manifold
+        node_enc, edge_enc, _, latent_ctx = model.encode_to_latent(
+            pred.detach(), data["one_hot_node_type"],
+            data["edge_index"], data["edge_features"],
+            data["params"], data["num_nodes"], data["num_edges"],
+            mask=data["mask"],
+            dirichlet_masks=data.get("dirichlet_masks"),
+        )
+
+    return predictions
+
+#def rollout_stay_latent(model, data, n_steps, visualize_every=1):
+#    """Rollout in latent space. Decode only for visualization."""
+#    node_enc, edge_enc, _, latent_ctx = model.encode_to_latent(
+#        data["field_data"], data["one_hot_node_type"],
+#        data["edge_index"], data["edge_features"],
+#        data["params"], data["num_nodes"], data["num_edges"],
+#        mask=data["mask"],
+#        dirichlet_masks=data.get("dirichlet_masks"),
+#    )
+#
+#    predictions = []
+#    for step in range(n_steps):
+#        node_enc, edge_enc = model.message_passing_series(node_enc, edge_enc, latent_ctx)
+#        if torch.isnan(node_enc).any():
+#            print(f"NaN in node_enc at step {step}")
+#            break
+#        if step % visualize_every == 0:
+#            print(f' rollout stay_latent step {step}')
+#            with torch.no_grad():
+#                pred = model.decode_from_latent(node_enc, latent_ctx)
+#                predictions.append(pred.cpu())
+#
+#    return predictions
+
 
 def resolve_baseline_vtu(rollout_cfg, training_cfg):
     """Get baseline VTU path from rollout config."""
@@ -103,7 +176,7 @@ def save_time_series_as_pvd(
         assert baseline_mesh.n_points == predictions.size(
             1
         ), f"Points mismatch: {baseline_mesh.n_points} vs {predictions.shape[1]}"
-
+        model._mask = mask
     # Validate field names
     field_names = config.get("fields", [])
     if len(field_names) != predictions.shape[-1]:
@@ -249,7 +322,7 @@ def run_evaluation(model_path, rollout_dir, node_file, edge_file, baseline_vtu, 
     dirichlet_masks = None
     if training_cfg.get('boundary_conditions', {}).get('enabled', False) and node_bcs is not None:
         dirichlet_masks = create_bc_masks(node_bcs, training_cfg.get('fields', []))
-
+    
     edges = np.load(edge_file)
     edges = (
         edges["edges"] if isinstance(edges, np.lib.npyio.NpzFile) else edges
@@ -280,6 +353,8 @@ def run_evaluation(model_path, rollout_dir, node_file, edge_file, baseline_vtu, 
 
     # Load model and statistics
     model, statistics = load_model_get_normalization(model_dict)
+    stay_latent = getattr(model, 'stay_latent', False)
+    model._dirichlet_masks = dirichlet_masks
 
     # Load ground truth data
     logger.debug("loading ground truth data")
@@ -330,32 +405,61 @@ def run_evaluation(model_path, rollout_dir, node_file, edge_file, baseline_vtu, 
     
     mean_sqr_err_total = 0
 
-    for bundle_iter in range(1, ground_truth.size(0)):
-        data_input = predictions[-1].to(device)
-        prediction, _ = model(
-            field_data=data_input,
-            one_hot_node_type=one_hot_node_type,
-            edge_index=edge_index,
-            edge_features=edge_features,
-            params=param_data,
-            mask=mask,
-            num_nodes=n_nodes,
-            num_edges=n_edges,
-            dirichlet_masks=dirichlet_masks,
-            pos=pos,
-        )
+
+    
+    if stay_latent:
+        print('here') 
+        # Latent-space rollout
+        data = {
+            "field_data": ground_truth[0].to(device),
+            "one_hot_node_type": one_hot_node_type,
+            "edge_index": edge_index,
+            "edge_features": edge_features,
+            "params": param_data,
+            "num_nodes": n_nodes,
+            "num_edges": n_edges,
+            "mask": mask,
+            "dirichlet_masks": dirichlet_masks,
+        }
+        latent_preds = rollout_stay_latent(model, data, ground_truth.size(0) - 1)
         
+        predictions = [ground_truth[0].detach().cpu()]
+        for bundle_iter, pred in enumerate(latent_preds):
+            print(pred.mean(), pred.max())
+            truth_step = ground_truth[bundle_iter + 1]
+            mse = torch.mean((pred - truth_step.cpu()) ** 2)
+            mean_sqr_err_total += mse
+            logger.debug(f"Step {bundle_iter + 1} MSE: {mse:.4f}")
+            predictions.append(pred)
+            
+    else:
+        # physical space decode/encode rollout
+        for bundle_iter in range(1, ground_truth.size(0)):
+            data_input = predictions[-1].to(device)
+            prediction = model(
+                field_data=data_input,
+                one_hot_node_type=one_hot_node_type,
+                edge_index=edge_index,
+                edge_features=edge_features,
+                params=param_data,
+                mask=mask,
+                num_nodes=n_nodes,
+                num_edges=n_edges,
+                dirichlet_masks=dirichlet_masks,
+                pos=pos,
+                return_step_enc_dec=False
+            )        
 
-        if dirichlet_masks is not None:
-            for field, dmask in dirichlet_masks.items():
-                prediction[dmask, field, :] = 0
+            if dirichlet_masks is not None:
+                for field, dmask in dirichlet_masks.items():
+                    prediction[dmask, field, :] = 0
 
-        truth_step = ground_truth[bundle_iter]
-        mse = torch.mean((prediction.detach().cpu() - truth_step) ** 2)
-        mean_sqr_err_total += mse
-        logger.debug(f"Step {bundle_iter} MSE: {mse:.4f}")
+            truth_step = ground_truth[bundle_iter]
+            mse = torch.mean((prediction.detach().cpu() - truth_step) ** 2)
+            mean_sqr_err_total += mse
+            logger.debug(f"Step {bundle_iter} MSE: {mse:.4f}")
 
-        predictions.append(prediction.detach().cpu())
+            predictions.append(prediction.detach().cpu())
 
     # Reshape predictions
     predictions = (

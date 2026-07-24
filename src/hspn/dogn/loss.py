@@ -1,6 +1,45 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+#
+#!/bin/bash
+
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+def diffuse_weights(weights, edge_index, iterations=2, alpha=0.5):
+    """Spread importance weights to graph neighbors."""
+    for _ in range(iterations):
+        neighbor_sum = torch.zeros_like(weights)
+        neighbor_sum.scatter_add_(
+            0,
+            edge_index[1].unsqueeze(-1).expand_as(weights[edge_index[0]]),
+            weights[edge_index[0]],
+        )
+        degree = torch.zeros(weights.shape[0], 1, device=weights.device)
+        degree.scatter_add_(
+            0,
+            edge_index[1].unsqueeze(-1),
+            torch.ones(edge_index.shape[1], 1, device=weights.device),
+        )
+        neighbor_avg = neighbor_sum / degree.clamp(min=1)
+        weights = alpha * weights + (1 - alpha) * neighbor_avg
+    return weights
 
 class LossFunction(nn.Module):
     """ Returns a custom loss
@@ -44,6 +83,7 @@ class LossFunction(nn.Module):
 
         return weighted.mean()
 
+    
 
 class EnergyLoss(nn.Module):
     """ Returns a loss based on the velocity and buoyancy of a field (2D). Includes APE
@@ -124,49 +164,130 @@ class EnergyLoss(nn.Module):
             mono_loss if isinstance(mono_loss, float) else mono_loss.item(),
         )
 
+class CompositeLoss(nn.Module):
+    def __init__(self, config, energy_loss_fn=None):
+        super().__init__()
+        loss_cfg = config.get("loss", {})
+        energy_cfg = loss_cfg.get("energy", {})
+        
+        self.persistence_weight = loss_cfg.get("persistence_weight", 0)
+        self.persistence_eps = loss_cfg.get("persistence_eps", 1e-2)
+        
+        self.change_weight = loss_cfg.get("change_weight", 0)
+        self.change_fields = loss_cfg.get("change_fields", [])
+        self.change_diffuse_iterations = loss_cfg.get("change_diffuse_iterations", 2)
+        self.change_diffuse_alpha = loss_cfg.get("change_diffuse_alpha", 0.5)
+        
+        self.ae_weight = loss_cfg.get("ae_weight", 0)
+        self.latent_weight = loss_cfg.get("latent_weight",0)
+        
+        
+        lg = energy_cfg.get("lambda_gradient", 0)
+        if lg > 0 and energy_loss_fn is not None:
+            self.criterion = LossFunction(lambda_gradient=lg)
+        else:
+            self.criterion = nn.MSELoss()
+            
+        self.energy_loss_fn = energy_loss_fn
+        self.energy_weights = {
+            k: energy_cfg.get(k, w)
+            for k, w in [("ke_weight", 1.0), ("ape_weight", 1.0),
+                        ("pe_min_weight", 1.0), ("monotonic_weight", 0.1)]
+        }
+        
+        
+        self.spectral_weight = loss_cfg.get("spectral_weight", 0)
 
+    def set_graph(self, edge_index, edge_features, num_nodes):
+        if hasattr(self.criterion, "set_graph"):
+            self.criterion.set_graph(edge_index, edge_features, num_nodes)
 
-def forward_loss(
-    model, data, target, criterion, energy_loss_fn, energy_config,field_names=None
-):
-    pred, orig = model(**data)
-    mse_loss = criterion( pred, target)
-    energy_loss, ke, ape, pe_min, mono = 0.0, 0.0, 0.0, 0.0, 0.0
-    if energy_loss_fn:
-        buo_coeff = data["params"][:, 0]
-        energy_loss, ke, ape, pe_min, mono = energy_loss_fn(
-            pred,
-            target,
-            buo_coeff,
-            data["num_nodes"],
-            energy_config.get("ke_weight", 1.0),
-            energy_config.get("ape_weight", 1.0),
-            energy_config.get("pe_min_weight", 1.0),
-            energy_config.get("monotonic_weight", 1.0),
-        )
-    loss = (
-        mse_loss
-        + energy_loss
-        + (nn.MSELoss()(orig, data["field_data"]) if orig is not None else 0)
-    )
-    mse_val = mse_loss.item() if isinstance(mse_loss, torch.Tensor) else mse_loss
-    
-    result = {
-        "loss": loss,
-        "mse": mse_val,
-        "ke": ke,
-        "ape": ape,
-        "pe_min": pe_min,
-        "mono": mono,
-    }
-    
-    # Compute mean of each field for both pred and target
-    pred_means = pred.mean(dim=(0, 2))
-    target_means = target.mean(dim=(0, 2))
-    
-    for i, (pm, tm) in enumerate(zip(pred_means, target_means)):
-        name = field_names[i] if field_names else f"field_{i}"
-        result[f"{name}_pred_mean"] = pm.item()
-        result[f"{name}_true_mean"] = tm.item()
-    
-    return result
+    def forward(self, pred, target, ae_pred=None, 
+            enc_y_pred=None, enc_y_true=None,
+            field_data=None, edge_index=None, 
+            energy_data=None,
+            pred_seq=None, true_seq=None,epoch=0):
+        """
+        Args:
+            pred:        model prediction (batch_nodes, fields, bundle)
+            target:      ground truth
+            num_nodes:   nodes per graph (for per-graph spectral loss)
+            ae_pred:        pre-message-passing decoder output (AE term)
+            energy_data: dict with params, num_nodes (for energy loss)
+            pred_seq:    predicted sequence for spectral loss
+            true_seq:    true sequence for spectral loss
+            field_data:  field data
+            edge_index:  edge index
+            epoch:       Epoch, in case of any decaying weights.
+
+        Returns:
+            dict with "loss" and individual metrics
+        """
+        #loss = self.criterion(pred, target)
+        m = {}#"mse": loss.item()}
+        if self.change_weight > 0 and field_data is not None and edge_index is not None:
+            if self.change_fields:
+                fd = field_data[:, self.change_fields, :]
+                tgt = target[:, self.change_fields, :]
+            else:
+                fd = field_data
+                tgt = target
+                
+            delta = (tgt - fd[..., -1:]).abs().mean(dim=(1, 2))  # (nodes,)
+            weights = 1 + self.change_weight * (delta / (delta.max() + 1e-8))
+            weights = weights.unsqueeze(-1)  # (nodes, 1) for diffuse_weights
+            weights = diffuse_weights(weights, edge_index,
+                                    iterations=self.change_diffuse_iterations,
+                                    alpha=self.change_diffuse_alpha)
+            weights = weights.view(-1, 1, 1)  # (nodes, 1, 1) for broadcasting with (nodes, fields, bundle)
+            loss = (weights * (pred - target) ** 2).mean()     
+        else:
+            loss = self.criterion(pred, target)
+        
+
+        m["mse"] = loss.item()
+        
+        
+
+        if self.ae_weight > 0 and ae_pred is not None:
+            ae = (ae_pred ** 2).mean()
+            loss = loss + self.ae_weight * ae
+            m["ae"] = ae.item()
+            
+        if self.latent_weight > 0 and enc_y_pred is not None and enc_y_true is not None:
+            enc_ae = self.criterion(enc_y_pred, enc_y_true)
+            loss = loss + self.latent_weight * enc_ae
+            m["latent"] = enc_ae.item()
+            
+            
+        if self.persistence_weight > 0 and field_data is not None:
+            pred_delta = (pred - field_data[..., -1:]).abs()
+            true_delta = (target - field_data[..., -1:]).abs()
+            shortfall = torch.relu(true_delta - pred_delta - self.persistence_eps)
+            persistence_loss = shortfall.mean()
+            loss = loss + self.persistence_weight * persistence_loss
+            m["persistence"] = persistence_loss.item()
+            
+
+        if self.energy_loss_fn is not None and energy_data is not None:
+            eloss, ke, ape, pe_min, mono = self.energy_loss_fn(
+                pred, target, energy_data["params"][:, 0],
+                energy_data["num_nodes"], **self.energy_weights,
+            )
+            loss = loss + eloss
+            m.update(ke=ke, ape=ape, pe_min=pe_min, mono=mono)
+            
+        if self.spectral_weight > 0 and pred_seq is not None and true_seq is not None:
+            # Per-graph SVD since nodes are concatenated across graphs
+            n = num_nodes or pred_seq.shape[0]
+            losses = []
+            for i in range(pred_seq.shape[0] // n):
+                p = pred_seq[i*n:(i+1)*n].reshape(-1, pred_seq.shape[-1])
+                t = true_seq[i*n:(i+1)*n].reshape(-1, true_seq.shape[-1])
+                losses.append(F.mse_loss(torch.linalg.svdvals(p), torch.linalg.svdvals(t)))
+            spec = torch.stack(losses).mean()
+            loss = loss + self.spectral_weight * spec
+            m["spectral"] = spec.item()
+   
+        m['loss'] = loss 
+        return m

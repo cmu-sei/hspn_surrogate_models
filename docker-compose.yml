@@ -26,7 +26,7 @@ x-base: &x-base
         NO_PROXY: ${NO_PROXY}
         no_proxy: ${no_proxy}
 
-  container_name: hspn-sm-${MY_NAME}
+  container_name: hspn-sm-${USER}
   image: hspn/surrogate-models-dev
 
 services:

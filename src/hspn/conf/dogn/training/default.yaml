@@ -4,32 +4,44 @@ learning_rate: 9.99e-4
 batch_size: 64
 log_interval: 10
 
-bundle: 2
+bundle: 3
 push_forward: 3
 noise: 5e-5
 bundle_style: overlapping
 max_samples_per_field_dir: -1
-
 loss:
-  type: "mse"
-  gradient_weighted:
-    lambda_gradient: 2.0
+  ae_weight: 1.0 # autoencoder loss x0 = Decoder(Encoder(x0))
+  persistence_weight: 0  # 0 = off, >0 = penalize under-prediction of change
+  persistence_eps: 1e-2 
+
+  change_weight: 0 #overweight changing regions.
+  change_fields: []
+  change_diffuse_iterations: 2
+  change_diffuse_alpha: 0.5
+
+  spectral_weight: 0 #use spectral loss
+
   energy:
-    velocity_indices: []
-    buoyancy_idx: null
+    enabled: false
+    velocity_indices: [0, 1]
+    buoyancy_idx: 2
+    up_dimension: "y"
     ke_weight: 1.0
     ape_weight: 1.0
     pe_min_weight: 1.0
     monotonic_weight: 0.1
+    lambda_gradient: 0 
 
 optimizer:
   _target_: schedulefree.AdamWScheduleFree
   lr: ${training.learning_rate}
 
 scheduler:
-  _target_: torch.optim.lr_scheduler.ConstantLR
-  factor: 1.0
-  total_iters: 1
+  _target_: torch.optim.lr_scheduler.LinearLR
+  start_factor: 0.01
+  end_factor: 1.0
+  total_iters: 10
+
 
 early_stopping:
   patience: 50

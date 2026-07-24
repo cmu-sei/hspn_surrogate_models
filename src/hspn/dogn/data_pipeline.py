@@ -1,3 +1,19 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+
 import json
 from pathlib import Path
 from typing import Dict, List
@@ -107,14 +123,12 @@ def apply_temporal_bundling(
             return [
                 torch.stack(data_list[i : i + window_size], dim=-1)
                 for i in range(
-                    0, len(data_list) - window_size + 1, bundle_size  # Changed: step by bundle_size, check window_size
+                    0, len(data_list) - window_size + 1, bundle_size  
                 )
             ]
 
     bundled = bundle(field_data)
     edge_bundled = bundle(edge_features) if edge_features else None
-
-    # Changed: extract the three components from each bundled window
     field_data_out = [b[..., :bundle_size] for b in bundled]
     single_step_y = [b[..., bundle_size:2*bundle_size] for b in bundled]
     push_forward_y = (
@@ -410,6 +424,7 @@ def get_dataset(mode, config, train_stats=None):
         return datasets[0]
     else:
         return ConcatDatasetWithStats(datasets)
+    
 class MeshDataset(Dataset):
     def __init__(
         self,
@@ -567,5 +582,3 @@ class ConcatDatasetWithStats(ConcatDataset):
     def reset_statistics(self, mean, var):
         for ds in self.datasets:
             ds.reset_statistics(mean, var)
-
-

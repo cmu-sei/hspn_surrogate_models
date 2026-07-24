@@ -1,3 +1,20 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+
+
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -25,7 +42,7 @@ from hspn.dogn.utils import (
     pyg_style_collate_fn,
 )
 
-from hspn.dogn.loss import LossFunction, EnergyLoss, forward_loss
+from hspn.dogn.loss import CompositeLoss, EnergyLoss
 from hspn.train_utils import save_checkpoint
 from hspn.dogn.rollout_evaluation import run_evaluation, resolve_baseline_vtu
 
@@ -119,7 +136,6 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     cfg = OmegaConf.create(cfg_dict)
     training_dict = cfg_dict.get("training", {})
     loss_cfg = training_dict.get("loss", {})
-    loss_type = loss_cfg.get("type", "mse")
     OmegaConf.resolve(cfg)
 
     config = TrainGNNConfig.from_cfg(cfg)
@@ -130,15 +146,14 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
     val_loader = config.val_dataloader
     optimizer = config.optimizer
     scheduler = config.scheduler
-    criterion = nn.MSELoss()
     tracker = config.tracker
 
     # Setup loss function
     energy_loss_fn = None
-    _graph_set = False
-
+    
     # Resume from checkpoint
     resume_from = cfg_dict.get("resume_from")
+    
     if resume_from:
         ckpt = torch.load(resume_from, map_location="cpu")
         model.load_state_dict(ckpt["model_state_dict"])
@@ -147,41 +162,46 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
         logger.info(f"Resumed from {resume_from} at epoch {start_epoch}")
     else:
         start_epoch = 0
-        
+
+    # Energy loss setup
+    energy_loss_fn = None
+    energy_cfg = loss_cfg.get("energy", {})
+    if energy_cfg.get("enabled", False):
+        fields = cfg_dict.get("dataset", {}).get("fields", [])
+        vel_indices = energy_cfg.get("velocity_indices", [])
+        buo_idx = energy_cfg.get("buoyancy_idx")
+
+        if vel_indices and buo_idx is not None:
+            node_positions = cfg_dict.get("dataset", {}).get("node_positions", ["x", "y", "z"])
+            up_dim = energy_cfg.get("up_dimension", "y")
+            up_idx = node_positions.index(up_dim)
+            sample = train_loader.dataset[0]
+            node_heights = sample[0]["pos"][:, up_idx] if isinstance(sample, tuple) else sample["pos"][:, up_idx]
+            energy_loss_fn = EnergyLoss(vel_indices, buo_idx, node_heights).to(device)
+            logger.info(f"Energy loss enabled: vel={vel_indices}, buo={buo_idx}, up={up_dim}")
+        else:
+            logger.warning("Energy loss enabled but missing velocity_indices or buoyancy_idx")
+
+    # Composite loss
+    loss_fn = CompositeLoss(
+        config=training_dict,
+        energy_loss_fn=energy_loss_fn,
+        ).to(device)
     
-    if loss_type == "gradient_weighted":
-        gw_cfg = loss_cfg.get("gradient_weighted", {})
-        n_fields = len(cfg_dict.get("dataset", {}).get("fields", []))
-        if n_fields < 2:
-            logger.error(
-                f"gradient_weighted loss requires at least 2 fields (got {n_fields}). "
-                "It assumes the last two fields are velocity components. Falling back to MSE."
-            )
-            loss_type = "mse"
-        else:
-            criterion = LossFunction(lambda_gradient=gw_cfg.get("lambda_gradient", 2.0))
+    # Validation is always MSE
+    val_criterion = nn.MSELoss()
 
-    elif loss_type == "energy":
-        en_cfg = loss_cfg.get("energy", {})
-        velocity_indices = en_cfg.get("velocity_indices", [])
-        buoyancy_idx = en_cfg.get("buoyancy_idx")
-        if velocity_indices and buoyancy_idx is not None:
-            logger.warning(
-                "EnergyLoss requires node_heights from the mesh. "
-                "This needs manual setup based on your geometry."
-            )
-            energy_loss_fn = None 
-        else:
-            logger.warning("Energy loss configured but missing velocity_indices or buoyancy_idx. Using MSE.")
-            loss_type = "mse"
-            
-        
-    if hasattr(optimizer, "train"):  # schedulefree
-        optimizer.train()  # type: ignore
+    if hasattr(optimizer, "train"):
+        optimizer.train()
 
+    val_loss = float("inf")
     try:
         if tracker:
             tracker["hparams"] = cfg_dict
+            for t in cfg_dict.get("tags", []):
+                tracker.add_tag(t)
+            tracker.description = cfg_dict.get("description", "")
+        
         # Save resolved config alongside checkpoints
         if ctx.is_main_process:
             config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -195,93 +215,151 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
         es_cfg = training_dict.get("early_stopping", {})
         patience = es_cfg.get("patience", 0)  # 0 = disabled
         min_delta = es_cfg.get("min_delta", 0.0)
+
+        push_forward_count = training_dict.get("push_forward", 0)
+        
         for epoch in range(start_epoch+1, config.n_epochs + 1):
             model.train()
             train_losses: list[float] = []
+            single_step_losses = {}
+            push_forward_losses = {}
+             
 
             for data, single_step_y, push_forward_y in train_loader:
+
                 data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
-
-                # pushforward rollout
-                push_forward_count = data.get("push_forward_count", 0)
-                with torch.inference_mode():
-                    for _ in range(push_forward_count):
-                                                
-                        data["field_data"], _ = model(**data)
-                        data["field_data"] = data["field_data"].detach()
-                        #data["field_data"] = model(**data).detach()
-
-                target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
-
-                optimizer.zero_grad()                               
-                #preds, _ = model(**data)
-                ##preds = model(**data)
-                #loss = criterion(preds, target)
                 
-                # Set graph for gradient-weighted loss (first batch only)
-                if loss_type == "gradient_weighted" and not _graph_set:
-                    criterion.set_graph(
-                        data["edge_index"], data["edge_features"], data["num_nodes"]
-                    )
-                    _graph_set = True
+                optimizer.zero_grad()
+                loss_fn.set_graph(data["edge_index"], data["edge_features"], data["num_nodes"])
+                original_field = data["field_data"].clone()
+                
+                model._dirichlet_masks=data.get("dirichlet_masks")
+                model._mask = data.get("mask") 
+                
+                
+                # --- Phase 1: single-step loss (always) ---
+                
+                # Encode, process, decode
+                node_enc, edge_enc, node_enc_dec, latent_ctx = model.encode_to_latent(**data)
+                node_enc_mp, edge_enc = model.message_passing_series(node_enc, edge_enc, latent_ctx)
+                pred = model.decode_from_latent(node_enc_mp, latent_ctx)
 
-                if energy_loss_fn is not None:
-                    energy_cfg = training_dict.get("loss", {}).get("energy", {})
-                    field_names = cfg_dict.get("dataset", {}).get("fields", cfg_dict.get("fields", []))
-                    result = forward_loss(
-                        model, data, target, nn.MSELoss(),
-                        energy_loss_fn, energy_cfg, field_names
-                    )
-                    loss = result["loss"]
+                m = loss_fn(pred, single_step_y.to(device), ae_pred=node_enc_dec,
+                            field_data=data["field_data"], edge_index=data["edge_index"],
+                            epoch=epoch)
+                loss = m["loss"]
+                
+                for name, value in m.items():
+                    v=value.item() if isinstance(value, torch.Tensor) else value
+                    single_step_losses[name] = v + single_step_losses.get(name,0)
+                
+                # --- Phase 2: push-forward loss (additive) ---
+                m_pf={}
+                if push_forward_count > 0:
+                    with torch.inference_mode():
+                        for _ in range(push_forward_count):
+                            data["field_data"] = model(**data).detach()
                     
-                    logger.info("[%d] train loss: %f", epoch, train_loss)
-                    if tracker and epoch % config.log_interval == 0:
-                        for key in ["mse", "ke", "ape", "pe_min", "mono"]:
-                            tracker.track(result[key], name=f"loss/{key}", step=epoch, context={"subset": "train"})
-                else:
-                    preds, _ = model(**data)
-                    loss = criterion(preds, target)
+                    # Encode, process, decode
+                    node_enc, edge_enc, _, latent_ctx = model.encode_to_latent(**data)
+                    node_enc_mp, edge_enc = model.message_passing_series(node_enc, edge_enc, latent_ctx)
+                    pred_pf = model.decode_from_latent(node_enc_mp, latent_ctx)
+                    
+                    node_enc_pf,_,_,_ = model.encode_to_latent(**{**data, "field_data":push_forward_y.to(device)})
+                    #pred_pf = model(**data)
+
+                    # Build sequences for spectral loss
+                    #true_seq = torch.cat([original_field, single_step_y.to(device), push_forward_y.to(device)], dim=-1)
+                    #pred_seq = torch.cat([original_field, pred.detach(), pred_pf], dim=-1)
+                    
+                    m_pf = loss_fn(pred_pf, 
+                                    push_forward_y.to(device),
+                                    enc_y_pred = node_enc_mp, 
+                                    enc_y_true = node_enc_pf.detach(),
+                                    field_data=data["field_data"], 
+                                    edge_index=data["edge_index"],
+                                    epoch=epoch
+                                    # energy_data=data, 
+                                    # pred_seq=pred_seq, 
+                                    # true_seq=true_seq,
+                               )
+                    loss = loss + m_pf["loss"]
+                    
+                
+                train_losses.append(loss.item())
+               
+                for name, value in m_pf.items():
+                    v = value.item() if isinstance(value, torch.Tensor) else value
+                    push_forward_losses[name]=v + push_forward_losses.get(name,0) 
+                    
+                    
+                # --- End: Back Propagation ---
                 
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1e8)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
                 optimizer.step()
-
-                train_losses.append(loss.item())
-
+                
+            # --- Post: Tracking ---
             train_loss = sum(train_losses) / len(train_losses)
+            single_step_losses = {name: value / len(train_losses) for name, value in single_step_losses.items()}
+            push_forward_losses = {name: value / len(train_losses) for name, value in push_forward_losses.items()}
+             
             if tracker:
                 tracker.track(train_loss, name="loss", step=epoch, context={"subset": "train"})
-
+                tracker.track(single_step_losses.get('loss',0), name="single_step_loss", step=epoch, context={"subset": "train"})
+                tracker.track(push_forward_losses.get('loss',0), name="push_forward_loss", step=epoch, context={"subset": "train"})
+                 
+                for name, loss in single_step_losses.items():
+                    tracker.track(loss, f"ss_{name}", step=epoch, context={'subset':'train'})
+                for name, loss in push_forward_losses.items():
+                    tracker.track(loss, f"pf_{name}", step=epoch, context={'subset':'train'})
+                         
+            # --- Validation ----
             model.eval()
+
             if hasattr(optimizer, "eval"):  # schedulefree
                 optimizer.eval()
 
             val_losses: list[float] = []
+            
             with torch.no_grad():
                 for data, single_step_y, push_forward_y in val_loader:
                     data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
 
-                    push_forward_count = data.get("push_forward_count", 0)
-
-                    # Push-forward warmup steps
-                    for _ in range(push_forward_count):
-                        data["field_data"], _ = model(**data)
-
-                    # Final graded prediction
-                    preds, _ = model(**data)
-
-                    target = push_forward_y.to(device) if push_forward_count > 0 else single_step_y.to(device)
-                    val_loss = criterion(preds, target)
+                    if push_forward_count > 0:
+                        for _ in range(push_forward_count):
+                            data["field_data"] = model(**data)
+                        target = push_forward_y.to(device)
+                    else:
+                        target = single_step_y.to(device)
+                    preds = model(**data)
+                        
+                    val_loss = val_criterion(preds, target)
                     val_losses.append(val_loss.item())
-
                 
             val_loss = sum(val_losses) / len(val_losses)
+            
+            
             if tracker:
                 tracker.track(val_loss, name="loss", step=epoch, context={"subset": "val"})
-            logger.info("[%d] val loss: %f", epoch, val_loss)
+            
+            
+            # output to screen
+            logger.info("[%d] train loss: %f  (total/mse/ae/latent): (%f/%f/%f/%f) (%f/%f/%f/%f),   val loss: %f", epoch
+                        , train_loss
+                        , single_step_losses['loss']
+                        , single_step_losses.get('mse',0) 
+                        , single_step_losses.get('ae',0)
+                        , single_step_losses.get('latent',0)
+                        , push_forward_losses['loss']
+                        , push_forward_losses.get('mse',0) 
+                        , push_forward_losses.get('ae',0)
+                        , push_forward_losses.get('latent',0)
+                        , val_loss)
 
             scheduler.step()
 
+            # Stop?
             if patience > 0:
                 if val_loss < best_val_loss - min_delta:
                     best_val_loss = val_loss
@@ -292,7 +370,8 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                         logger.info(f"Early stopping at epoch {epoch} (best val_loss: {best_val_loss:.6f})")
                         break
 
-            if epoch % 10 == 0 and ctx.is_main_process:
+            # Save?
+            if (epoch % 10 == 0  or epoch==config.n_epochs) and ctx.is_main_process:
                 metrics = {"loss": train_loss, "val_loss": val_loss}
                 if cfg_dict.get("trainer"):
                     with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
@@ -324,27 +403,10 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
             if hasattr(optimizer, "train"):  # schedulefree
                 optimizer.train()
             
-            #if epoch % 10 == 0 and ctx.is_main_process:
-            #    from ray import train
+    except Exception:
+        logger.exception("Training failed")
+        return float("inf")
 
-            #    metric  {"loss": train_loss, "val_loss": val_loss}
-            #    with tempfile.TemporaryDirectory() as temp_checkpoint_dir:
-            #        from hspn.train_utils import save_checkpoint
-
-            #        save_checkpoint(
-            #            Path(temp_checkpoint_dir, "model.pt"),
-            #            model=model,
-            #            optimizer=optimizer,
-            #            scheduler=scheduler,
-            #            gradscaler=None,
-            #            epoch=epoch,
-            #            metrics={"epoch": epoch},
-            #        )
-            #        checkpoint = Checkpoint.from_directory(temp_checkpoint_dir)
-            #        train.report(metrics, checkpoint=checkpoint)
-    except:
-        logger.exception("Failed")
-        raise
     finally:
         if tracker:
             tracker.close()
@@ -415,6 +477,8 @@ def train_loop_per_worker(cfg_dict: Dict[str, Any]) -> None:
                     except Exception as e:
                         logger.error(f"Rollout evaluation failed: {e}")
                         logger.exception("Rollout traceback:")
+                        
+    return val_loss
 
 
 @hydra.main(config_path="pkg://hspn.conf.dogn", config_name="train_gnn", version_base=None)
@@ -433,7 +497,8 @@ def main(cfg: DictConfig) -> None:
         result = trainer.fit()
     else:
         result = train_loop_per_worker(OmegaConf.to_container(cfg))
-    print(result)
+    print(f"RESULT: {result}")
+    return result
 
 
 if __name__ == "__main__":

@@ -1,20 +1,29 @@
 defaults:
   - dataset: naca0012
-  - model: gns_both_flat_linear_9_32
+  - model: gns_both_flat_linear_3_32_128-32-128_3-3-3
   - training: default
   - rollout: "off"
   - _self_
 
 # Per-experiment / per-machine settings
-tag: both
+tags:
+  - dat_${dataset.name}
+  - mod_${model.name}
+  - fwd_${training.push_forward}
+  - bun_${training.bundle}
+
+description: "default no description"
+
 base_dir: ${hydra:runtime.cwd}/outputs/${dataset.name}/${model.name}/b${training.bundle}_fwd${training.push_forward}
 checkpoint_dir: ${base_dir}/${now:%Y-%m-%d_%H-%M-%S}/ckpt
 results_dir: ${base_dir}/${now:%Y-%m-%d_%H-%M-%S}
-
+hydra:
+run:
+  dir: ${base_dir}/${now:%Y-%m-%d_%H-%M-%S}
 
 tracker:
   _target_: aim.Run
-  repo: .
+  repo: ${hydra:runtime.cwd}/outputs/${dataset.name}
   experiment: ${dataset.name}_${model.name}_b${training.bundle}_fwd${training.push_forward} #${hydra:job.config_name}
 
 resume_from: null

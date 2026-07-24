@@ -1,3 +1,20 @@
+#!/bin/sh
+#
+# HyperSPIN code - hspn_surrogate_models
+# 
+# Copyright 2025 Carnegie Mellon University.
+# 
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+# 
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu for full terms.
+# 
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution.  Please see Copyright notice for non-US Government use and distribution.
+# 
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+# 
+# DM25-0396
+#
+
 """
 Graph Neural Network for physics simulation with message passing.
 
@@ -99,12 +116,11 @@ class GraphNetworkSimulator(nn.Module):
         bundle_size: int = 1,
         node_encoder_input_size: int = -1,
 #        num_edge_features: int = -1,
-        deeponet_type: Literal["off", "node", "edge", "both", "compatibility", "compat"] = "off",
+        deeponet_type: Literal["off", "node", "edge", "both"] = "off",
         time_aggregation: Literal[ "off", "flatten", "conv", "conv_compress"] = "flatten",
         time_integration: Literal["off", "linear", "cumsum"] = "off",
         edge_dropout: float = 0.0,
         sparsity: int | None = None,
-        center: bool = False,
     ):
         super().__init__()
         
@@ -119,7 +135,7 @@ class GraphNetworkSimulator(nn.Module):
         self.branch_net = branch_net
         self.edge_attention = edge_attention
         self.time_encoder: nn.Conv1d | None = None
-        self.time_decoder: nn.ConvTranspose1d | None = None
+        self.time_decoder: nn.Sequential | None = None
 
         # Configuration
         self.bundle_size = bundle_size
@@ -128,22 +144,12 @@ class GraphNetworkSimulator(nn.Module):
         self.n_processors = len(edge_updaters)
 
         # DeepONet flags (require branch_net to be present)
-        self.node_deeponet = deeponet_type in ("both", "node", "compat", "compatibility") and branch_net is not None
+        self.node_deeponet = deeponet_type in ("both", "node") and branch_net is not None
         self.edge_deeponet = deeponet_type in ("both", "edge") and branch_net is not None
-        self.is_compatibility_mode = deeponet_type[:6].lower() == "compat"
-        
-        #if self.is_compatibility_mode:
         self.no_affine_layer_norm = nn.LayerNorm(self.node_encoder[-1].weight.size(0), elementwise_affine=False)
-
-        # Colin mode overrides certain settings
-        if self.is_compatibility_mode:
-            edge_dropout = 0.0
-            sparsity = None
-            center = False
 
         self.edge_dropout = edge_dropout
         self.sparsity = sparsity
-        self.center = center
         
         # Time handling
         self.time_aggregation = time_aggregation
@@ -169,12 +175,15 @@ class GraphNetworkSimulator(nn.Module):
             stride=1,
             padding=padding,
         )
-        self.time_decoder = nn.ConvTranspose1d(
-            in_channels=hidden_dim,
-            out_channels=hidden_dim,
-            kernel_size=bundle_size,
-            stride=1,
-            padding=padding,
+        self.time_decoder = nn.Sequential(
+            nn.Upsample(size=bundle_size, mode='nearest'),
+            nn.Conv1d(
+                in_channels=hidden_dim*2,
+                out_channels=hidden_dim*2,
+                kernel_size=bundle_size,
+                stride=1,
+                padding=padding,
+            ),
         )
 
     def _init_weights(self) -> None:
@@ -357,97 +366,13 @@ class GraphNetworkSimulator(nn.Module):
     # Forward Methods
     # -------------------------------------------------------------------------
 
-    def _forward_compatibility(
-        self,
-        field_data: torch.Tensor,
-        one_hot_node_type: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_features: torch.Tensor,
-        params: torch.Tensor,
-        num_nodes: int,
-        num_edges: int,
-    ) -> torch.Tensor:
-        """
-        Forward pass for Colin-style DeepONet architecture.
+    def encode_to_latent(self, field_data, one_hot_node_type, edge_index,
+                        edge_features, params, num_nodes, num_edges,
+                        mask=None, dirichlet_masks=None, **kwargs):
+        """Encode inputs to latent space. Returns latent node and edge features."""
+        mask = mask if mask is not None else getattr(self, '_mask', None)
+        dirichlet_masks = dirichlet_masks if dirichlet_masks is not None else getattr(self, '_dirichlet_masks', None)
         
-        Uses only the last timestep and applies linear time integration.
-        """
-        batch_nodes, n_fields, bundle_size = field_data.shape
-        batch_edges = edge_features.shape[0]
-        batches = batch_nodes // num_nodes
-        edges_per_graph = batch_edges // batches
-
-        # Use only last timestep
-        field_data = field_data[:, :, -1]
-        edge_index = edge_index[:, :batches * edges_per_graph]
-
-        # Combine fields and node types
-        node_data = torch.cat([field_data, one_hot_node_type], dim=-1)
-
-        # Branch network
-        branch_out = None
-        if self.branch_net is not None:
-            branch_out = self.branch_net(params)
-            branch_out = branch_out.repeat_interleave(num_nodes, dim=0)
-
-        # Encode
-        node_enc = checkpoint(self.node_encoder, node_data, use_reentrant=False)
-        edge_enc = checkpoint(self.edge_encoder, edge_features, use_reentrant=False)
-        
-        # Message passing
-        for ex, (edge_updater, node_updater) in enumerate(zip(self.edge_updaters, self.node_updaters)):
-            node_enc = self.no_affine_layer_norm(node_enc)
-            src_features = node_enc[edge_index[0]]
-            dst_features = node_enc[edge_index[1]]
-
-            # Update edges
-            edge_input = torch.cat([edge_enc, dst_features, src_features], dim=-1)
-            edge_enc = checkpoint(edge_updater, edge_input, use_reentrant=False)
-
-            # Aggregate to nodes (mean)
-            aggregated = edge_enc.new_zeros(node_enc.shape)
-            aggregated = aggregated.scatter_reduce(
-                0,
-                edge_index[1].unsqueeze(1).expand_as(edge_enc),
-                edge_enc,
-                reduce="mean",
-            )
-
-            # Update nodes
-            node_input = torch.cat([node_enc, aggregated], dim=-1)
-            node_delta = node_updater(node_input)
-            node_enc = node_enc + node_delta
-
-            # Apply DeepONet modulation
-            if branch_out is not None:
-                node_enc = node_enc * branch_out
-                
-        # Decode and apply linear time scaling
-        #node_enc = self.no_affine_layer_norm(node_enc)
-        output = self.node_decoder(node_enc)
-    
-        time_scale = torch.arange(1, self.bundle_size + 1, dtype=output.dtype, device=output.device)
-        output = output.view(batches, num_nodes, n_fields, self.bundle_size)
-        output = torch.einsum("bnft,t->bnft", output, time_scale)
-        
-        return output.reshape(-1, n_fields, self.bundle_size)
-
-    def _forward_internal(
-        self,
-        field_data: torch.Tensor,
-        one_hot_node_type: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_features: torch.Tensor,
-        params: torch.Tensor,
-        num_nodes: int,
-        num_edges: int,
-    ) -> torch.Tensor:
-        """
-        Forward pass for Jasmine-style architecture.
-        
-        Supports temporal convolution, edge attention, and various DeepONet modes.
-        """
-
         batch_nodes, n_fields, bundle_size = field_data.shape
         batches = batch_nodes // num_nodes
 
@@ -455,15 +380,20 @@ class GraphNetworkSimulator(nn.Module):
         one_hot_expanded = one_hot_node_type.unsqueeze(-1).expand(-1, -1, bundle_size)
         node_data = torch.cat([field_data, one_hot_expanded], dim=1)
 
-        # Branch network (pad to D for passthrough channel)
         branch_out = None
         if self.branch_net is not None:
             branch_out = self.branch_net(params)
             branch_out = F.pad(branch_out, (0, 1), value=1.0)
 
+        
         # Encode nodes (with optional temporal processing)
         node_enc, time_size = self._encode_nodes(node_data, batches, bundle_size, num_nodes)
+        decode_input = torch.cat([node_enc,node_enc], dim=1)
+        b = 1 if self.time_aggregation == "conv_compress" else bundle_size
+        node_enc_dec = self._decode_nodes(decode_input, batches, b, time_size, n_fields, num_nodes)
         edge_enc = checkpoint(self.edge_encoder, edge_features, use_reentrant=False)
+
+        
         # Compute edge mask (once per batch, then repeat)
         single_batch_edges = edge_index.reshape(2, batches, num_edges)[:, 0, :]
         edge_mask = self.compute_edge_mask(
@@ -474,7 +404,6 @@ class GraphNetworkSimulator(nn.Module):
         )
         edge_mask = edge_mask.repeat(batches)
 
-        # Message passing
         ctx = {
             "edge_index": edge_index,
             "edge_mask": edge_mask,
@@ -482,25 +411,16 @@ class GraphNetworkSimulator(nn.Module):
             "batches": batches,
             "num_nodes": num_nodes,
             "num_edges": num_edges,
+            "n_fields": n_fields, # new
+            "bundle_size": bundle_size, #new
+            "time_size": time_size, #new
+            "field_data": field_data, #new
+            "node_enc_original": node_enc, # new
         }
-        for layer_idx, (edge_updater, node_updater) in enumerate(zip(self.edge_updaters, self.node_updaters)):
-            edge_enc, node_enc = self._message_passing_step(layer_idx, edge_enc, node_enc, edge_updater, node_updater, **ctx)
         
-        node_enc = self.no_affine_layer_norm(node_enc) 
-        
-        # Decode
-        output = self._decode_nodes(node_enc, batches, bundle_size, time_size, n_fields, num_nodes)
-
-        # Time integration
-        if self.time_integration == "linear":
-            n_steps = output.size(-1)
-            time_scale = torch.arange(1, n_steps + 1, dtype=output.dtype, device=output.device)
-            output = torch.einsum("bft,t->bft", output, time_scale)
-        elif self.time_integration == "cumsum":
-            output = torch.cumsum(output, dim=2)
-
-        return output
-
+        return node_enc, edge_enc, node_enc_dec, ctx
+    
+    
     def _encode_nodes(
         self,
         node_data: torch.Tensor,
@@ -522,43 +442,26 @@ class GraphNetworkSimulator(nn.Module):
             node_enc = node_enc.reshape(batch_nodes, bundle_size, -1).transpose(1, 2) #batch_nodes, features, time
             node_enc, time_size = self._time_encode(node_enc, batches, bundle_size, num_nodes) #batch_nodes, new_features
             return node_enc, time_size
-        elif self.time_aggregation == "off":
-            
+        
+        elif self.time_aggregation == "off":    
             node_data = node_data.transpose(1, 2).reshape(batch_nodes * bundle_size, self.node_encoder_input_size)
             node_enc = checkpoint(self.node_encoder, node_data, use_reentrant=False)
             return node_enc, None
+        
         else:
             raise NotImplementedError(f"Unknown time_aggregation: {self.time_aggregation}")
 
-    def _decode_nodes(
-        self,
-        node_enc: torch.Tensor,
-        batches: int,
-        bundle_size: int,
-        time_size: int | None,
-        n_fields: int,
-        num_nodes: int,
-    ) -> torch.Tensor:
-        """Decode node features to output fields."""
-        batch_nodes = batches * num_nodes
-        
-        if self.time_aggregation == "flatten":
-            output = self.node_decoder(node_enc)
-            return output.view(batch_nodes, n_fields, -1)
-            
-        elif self.time_aggregation.startswith("conv"):
-            decoded, _ = self._time_decode(node_enc, batches, time_size, num_nodes)
-            features = decoded.shape[1]  # Save before transpose
-            decoded = decoded.transpose(1, 2).reshape(batch_nodes * bundle_size, features)
-            output = self.node_decoder(decoded)
-            return output.reshape(batch_nodes, bundle_size, n_fields).transpose(1, 2)
-        
-        elif self.time_aggregation == "off":
-            output = self.node_decoder(node_enc)
-            output = output.reshape(batch_nodes, -1, n_fields).transpose(2,1)
-            return output
-        else:
-            raise NotImplementedError(f"Unknown time aggregation {self.time_aggregation}")
+    def message_passing_series(self, node_enc, edge_enc, ctx):
+        """Run the message passing loop."""
+        for layer_idx, (edge_updater, node_updater) in enumerate(
+            zip(self.edge_updaters, self.node_updaters)
+        ):
+            edge_enc, node_enc = self._message_passing_step(
+                layer_idx, edge_enc, node_enc,
+                edge_updater, node_updater, **ctx
+            )
+        node_enc = self.no_affine_layer_norm(node_enc)
+        return node_enc, edge_enc
     
     def _message_passing_step(
         self,
@@ -573,6 +476,7 @@ class GraphNetworkSimulator(nn.Module):
         batches: int,
         num_nodes: int,
         num_edges: int,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Single message passing step: edge update → aggregate → node update."""
         
@@ -635,18 +539,89 @@ class GraphNetworkSimulator(nn.Module):
 
         return edge_enc, node_enc
 
-    def forward(
+    
+    def decode_from_latent(self, node_enc, ctx):
+        """Latent to final prediction (physical values with BCs applied).
+
+        """
+        #decode_input = node_enc  - ctx["node_enc_original"] 
+        decode_input = torch.cat([node_enc, ctx["node_enc_original"]], dim=-1) 
+        b = 1 if self.time_aggregation == "conv_compress" else ctx["bundle_size"]  
+        output = self._decode_nodes(
+            decode_input, ctx["batches"], b ,
+            ctx["time_size"], ctx["n_fields"], ctx["num_nodes"]
+        )
+        
+        # Time integration
+        if self.time_integration == "linear":
+            n_steps = output.size(-1)
+            time_scale = torch.arange(1, n_steps + 1, dtype=output.dtype, device=output.device)
+            output = torch.einsum("bft,t->bft", output, time_scale)
+        elif self.time_integration == "cumsum":
+            output = torch.cumsum(output, dim=2)
+
+        # Physical-space residual
+        output = self.apply_residual(output, ctx["field_data"], self._mask)
+
+        # Dirichlet BCs
+        dirichlet_masks = self._dirichlet_masks
+        if dirichlet_masks is not None:
+            field_data = ctx["field_data"]
+            for field_idx, node_mask in dirichlet_masks.items():
+                output[node_mask, field_idx, :] = field_data[node_mask, field_idx, -1:]
+
+        return output
+
+
+    def _decode_nodes(
         self,
-        field_data,
-        one_hot_node_type,
-        edge_index,
+        decode_input: torch.Tensor,
+        batches: int,
+        bundle_size: int,
+        time_size: int | None,
+        n_fields: int,
+        num_nodes: int,
+    ) -> torch.Tensor:
+        """Decode node features to output fields."""
+        batch_nodes = batches * num_nodes
+       
+        if self.time_aggregation == "flatten":
+            output = self.node_decoder(decode_input)
+            return output.view(batch_nodes, n_fields, -1)
+            
+        elif self.time_aggregation.startswith("conv"):
+            decoded, _ = self._time_decode(decode_input, batches, time_size, num_nodes)
+            features = decoded.shape[1]  # Save before transpose
+            decoded = decoded.transpose(1, 2).reshape(batch_nodes * bundle_size, features)
+            output = self.node_decoder(decoded)
+            return output.reshape(batch_nodes, bundle_size, n_fields).transpose(1, 2)
+        
+        elif self.time_aggregation == "off":
+            output = self.node_decoder(decode_input)
+            output = output.reshape(batch_nodes, -1, n_fields).transpose(2,1)
+            return output
+        else:
+            raise NotImplementedError(f"Unknown time aggregation {self.time_aggregation}")
+    
+    
+    def apply_residual(self, update, field_data, mask):
+        """Add physical-space residual: pred = last_input + update."""
+        residual = field_data[:, :, -1:].clone().repeat(1, 1, field_data.size(2))
+        residual[mask] = residual[mask] + update[mask]
+        return residual
+    
+
+    def forward(self,
+        field_data, 
+        pos, 
+        one_hot_node_type, edge_index,
         edge_features,
         params,
-        mask,
         num_nodes,
         num_edges,
+        mask=None,
         dirichlet_masks=None,
-        pos=None, 
+        return_step_enc_dec = False,
         **kwargs,
         ) -> tuple[torch.Tensor, None]:
         """
@@ -659,37 +634,28 @@ class GraphNetworkSimulator(nn.Module):
             edge_index: [2, batch*edges] edge connectivity
             edge_features: [batch*edges, edge_dim] edge features (dx, dy, dist)
             params: [batch, n_params] simulation parameters for DeepONet
-            mask: [batch*nodes] boolean mask for updateable nodes
-            dirichlet_masks: {field_idx: node_mask} for Dirichlet boundary conditions
             num_nodes: Number of nodes per graph
             num_edges: Number of edges per graph
+            mask: [batch*nodes] boolean mask for updateable nodes
+            dirichlet_masks: {field_idx: node_mask} for Dirichlet boundary conditions
 
         Returns:
-            residual: [batch*nodes, n_fields, bundle_size] predicted next state
-            None: Placeholder for compatibility
+            value: [batch*nodes, n_fields, bundle_size] predicted next state
         """
-            
-        residual = field_data[:, :, -1:].clone().repeat(1, 1, field_data.size(2))
-          
-        # Select architecture1
-        arch = self._forward_compatibility if self.is_compatibility_mode else self._forward_internal
-        update = arch(
-            field_data, one_hot_node_type, edge_index, edge_features,
-            params, num_nodes, num_edges,
-        )
-
-        # Center updates if enabled
-        if self.center:
-            update = update - update.mean(dim=0, keepdim=True)
         
-        # Apply Dirichlet boundary conditions
-        if dirichlet_masks is not None:
-            for field_idx, node_mask in dirichlet_masks.items():
-                update[node_mask, field_idx, :] = 0.0
-                
-        # Apply residual connection
-        residual[mask] = residual[mask] + update[mask]
-        return residual, None
+        #not great to update the class like this.
+        self._mask = mask
+        self._dirichlet_masks = dirichlet_masks
+        
+        node_enc, edge_enc, node_enc_dec, latent_ctx = self.encode_to_latent(
+            field_data, one_hot_node_type, edge_index, edge_features,
+            params, num_nodes, num_edges)
+        node_enc, edge_enc = self.message_passing_series(node_enc, edge_enc, latent_ctx)
+        next_step = self.decode_from_latent(node_enc, latent_ctx)
+        
+        if return_step_enc_dec:
+            return next_step, node_enc_dec
+        return next_step
     
     @staticmethod
     def build_mlp(
@@ -768,6 +734,7 @@ class GraphNetworkSimulator(nn.Module):
                 layers.append(norm(out_ch))
             if act is not None:
                 layers.append(act)
+                
         # Add regularization
         if ReZero:
             layers.append(ReZeroScale(init_val))
@@ -775,6 +742,9 @@ class GraphNetworkSimulator(nn.Module):
             layers.insert(-2, nn.Dropout(dropout))
 
         return nn.Sequential(*layers)
+    
+    
+    
 # =============================================================================
 # Model Factory
 # =============================================================================
@@ -801,7 +771,6 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
     n_processors = model_cfg.get("n_processors", 3)
     edge_dropout = model_cfg.get("edge_dropout", 0.0)
     sparsity = model_cfg.get("sparsity")
-    center = model_cfg.get("center", False)
     
     deeponet_type = model_cfg.get("deeponet_type", "off")
     time_integration = model_cfg.get("time_integration", "off")
@@ -816,16 +785,8 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
     branch_cfg = model_cfg.get("branch_net")
     attention_cfg = model_cfg.get("edge_attention")
 
-    # Colin mode overrides
-    if deeponet_type[:6].lower() == "compat":
-        attention_cfg = None
-        time_aggregation = "flatten"
-        time_integration = "linear"
-        edge_dropout = 0.0
-        sparsity = None
-        branch_net_output_size = latent_dim
-    else:
-        branch_net_output_size = latent_dim - 1 
+
+    branch_net_output_size = latent_dim - 1 
 
     # Build branch network (optional for all modes)
     branch_net = None
@@ -851,7 +812,7 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
     node_enc_timesteps = 1
 
     if time_aggregation == "flatten":
-        time_multiplier = 1 if deeponet_type[:6].lower() == "compat" else bundle
+        time_multiplier =  bundle
         encoder_input_size *= time_multiplier
         decoder_output_size *= bundle
     elif time_aggregation == "conv":
@@ -869,7 +830,7 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
         in_size=encoder_input_size, out_size=latent_dim, **node_enc_cfg
     )
     node_decoder = GraphNetworkSimulator.build_mlp(
-        in_size=latent_dim, out_size=decoder_output_size, **node_dec_cfg
+        in_size=latent_dim*2, out_size=decoder_output_size, **node_dec_cfg
     )
 
     # Build processor networks with per-layer ReZero initialization
@@ -886,7 +847,7 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
         GraphNetworkSimulator.build_mlp(
             in_size=node_upd_in,
             out_size=node_upd_out,
-            init_val=0.1 ** ((i / 2) + 1),
+            init_val=0.5 ** ((i / 2) + 1),
             **node_upd_cfg,
         )
         for i in range(n_processors)
@@ -902,11 +863,9 @@ def get_model(config: dict, n_types: int) -> GraphNetworkSimulator:
         edge_attention=edge_attention,
         bundle_size=bundle,
         node_encoder_input_size=encoder_input_size,
-#        num_edge_features=dimensions + 1,
         deeponet_type=deeponet_type,
         time_aggregation=time_aggregation,
         time_integration=time_integration,
         edge_dropout=edge_dropout,
         sparsity=sparsity,
-        center=center,
     )
